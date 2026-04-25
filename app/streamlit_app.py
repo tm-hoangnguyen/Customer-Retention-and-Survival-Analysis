@@ -85,7 +85,113 @@ def check_artifacts() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Page 1 — Customer Lookup
+# Page 0 — Transactions Explorer
+# ---------------------------------------------------------------------------
+
+def page_transactions(transactions: pd.DataFrame):
+    st.header("Transaction Explorer")
+    st.write(f"Total records: **{len(transactions):,}** across **{transactions['customer_id'].nunique():,}** customers.")
+
+    with st.expander("Filters", expanded=True):
+        col1, col2, col3 = st.columns([2, 2, 1])
+
+        # Customer ID filter
+        customer_search = col1.text_input(
+            "Customer ID (contains)",
+            placeholder="e.g. C013",
+        )
+
+        # Date range filter
+        date_min = transactions["transaction_date"].min().date()
+        date_max = transactions["transaction_date"].max().date()
+        date_range = col2.date_input(
+            "Transaction date range",
+            value=(date_min, date_max),
+            min_value=date_min,
+            max_value=date_max,
+        )
+
+        # Amount range filter
+        amt_min = float(transactions["amount"].min())
+        amt_max = float(transactions["amount"].max())
+        amount_range = col3.slider(
+            "Amount range ($)",
+            min_value=amt_min,
+            max_value=amt_max,
+            value=(amt_min, amt_max),
+            step=1.0,
+        )
+
+    # Apply filters
+    filtered = transactions.copy()
+
+    if customer_search.strip():
+        filtered = filtered[
+            filtered["customer_id"].str.contains(customer_search.strip(), case=False, na=False)
+        ]
+
+    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        start_date, end_date = date_range
+        filtered = filtered[
+            (filtered["transaction_date"].dt.date >= start_date)
+            & (filtered["transaction_date"].dt.date <= end_date)
+        ]
+
+    filtered = filtered[
+        (filtered["amount"] >= amount_range[0])
+        & (filtered["amount"] <= amount_range[1])
+    ]
+
+    st.write(f"Showing **{len(filtered):,}** records after filters.")
+
+    st.dataframe(
+        filtered.sort_values("transaction_date", ascending=False)
+        .reset_index(drop=True)
+        .style.format({
+            "transaction_date": lambda v: v.strftime("%Y-%m-%d") if pd.notna(v) else "",
+            "amount": "${:.2f}",
+        }),
+        use_container_width=True,
+        height=500,
+    )
+
+    # Summary stats for filtered slice
+    if not filtered.empty:
+        st.markdown("### Summary")
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Transactions", f"{len(filtered):,}")
+        s2.metric("Unique Customers", f"{filtered['customer_id'].nunique():,}")
+        s3.metric("Total Revenue", f"${filtered['amount'].sum():,.2f}")
+        s4.metric("Avg Order Value", f"${filtered['amount'].mean():,.2f}")
+
+# ---------------------------------------------------------------------------
+# Page 1 — RFM Analysis
+# ---------------------------------------------------------------------------
+
+def page_rfm(transactions: pd.DataFrame, customers: pd.DataFrame):
+    st.header("RFM Customer Segmentation")
+    analysis_date = transactions["transaction_date"].max() + pd.Timedelta(days=1)
+    st.write(f"Analysis date: **{analysis_date.date()}**")
+
+    with st.spinner("Computing RFM segments..."):
+        rfm_q = compute_rfm_segments(transactions, analysis_date)
+        seg_stats = compute_seg_stats(rfm_q)
+
+    st.markdown("### Segment Summary")
+    display_stats = seg_stats.copy()
+    display_stats["pct"] = display_stats["pct"].map("{:.1%}".format)
+    display_stats["avg_monetary"] = display_stats["avg_monetary"].map("${:.0f}".format)
+    st.dataframe(display_stats, use_container_width=True)
+
+    st.markdown("### Segmentation Grid")
+    fig = plot_rfm_grid(rfm_q, seg_stats)
+    st.pyplot(fig)
+
+    st.markdown("### Full RFM Table")
+    st.dataframe(rfm_q, use_container_width=True)
+
+# ---------------------------------------------------------------------------
+# Page 2 — Customer Lookup
 # ---------------------------------------------------------------------------
 
 def page_customer_lookup(models: dict, transactions: pd.DataFrame):
@@ -167,33 +273,6 @@ def page_customer_lookup(models: dict, transactions: pd.DataFrame):
             st.pyplot(fig2)
         except Exception as e:
             st.warning(f"Could not render survival curve: {e}")
-
-
-# ---------------------------------------------------------------------------
-# Page 2 — RFM Analysis
-# ---------------------------------------------------------------------------
-
-def page_rfm(transactions: pd.DataFrame, customers: pd.DataFrame):
-    st.header("RFM Customer Segmentation")
-    analysis_date = transactions["transaction_date"].max() + pd.Timedelta(days=1)
-    st.write(f"Analysis date: **{analysis_date.date()}**")
-
-    with st.spinner("Computing RFM segments..."):
-        rfm_q = compute_rfm_segments(transactions, analysis_date)
-        seg_stats = compute_seg_stats(rfm_q)
-
-    st.markdown("### Segment Summary")
-    display_stats = seg_stats.copy()
-    display_stats["pct"] = display_stats["pct"].map("{:.1%}".format)
-    display_stats["avg_monetary"] = display_stats["avg_monetary"].map("${:.0f}".format)
-    st.dataframe(display_stats, use_container_width=True)
-
-    st.markdown("### Segmentation Grid")
-    fig = plot_rfm_grid(rfm_q, seg_stats)
-    st.pyplot(fig)
-
-    st.markdown("### Full RFM Table")
-    st.dataframe(rfm_q, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
@@ -318,13 +397,21 @@ def main():
 
     page = st.sidebar.radio(
         "Navigate",
-        ["Customer Lookup", "RFM Analysis", "Model Performance", "Retention Ranking"],
+        [
+            "Transactions",
+            "RFM Analysis",
+            "Customer Lookup",
+            "Model Performance",
+            "Retention Ranking",
+        ],
     )
 
-    if page == "Customer Lookup":
-        page_customer_lookup(models, transactions)
+    if page == "Transactions":
+        page_transactions(transactions)
     elif page == "RFM Analysis":
         page_rfm(transactions, customers)
+    elif page == "Customer Lookup":
+        page_customer_lookup(models, transactions)
     elif page == "Model Performance":
         page_model_performance(models)
     elif page == "Retention Ranking":
