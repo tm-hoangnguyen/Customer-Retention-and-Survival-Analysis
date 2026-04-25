@@ -15,11 +15,20 @@ from core.config import (
     CHURN_HIGH_RISK_THRESHOLD,
     CHURN_MEDIUM_RISK_THRESHOLD,
     CLV_HORIZON_MONTHS,
-    CUTOFF_DATE,
     GG_CLV_HORIZON_MONTHS,
     GG_DISCOUNT_RATE,
 )
 from core.features import create_churn_features
+
+
+def _resolve_cutoff(
+    transactions: pd.DataFrame,
+    cutoff_date: pd.Timestamp | None,
+) -> pd.Timestamp:
+    """Return cutoff_date if provided, otherwise the latest transaction date."""
+    if cutoff_date is not None:
+        return cutoff_date
+    return transactions["transaction_date"].max()
 
 
 # ---------------------------------------------------------------------------
@@ -29,9 +38,10 @@ from core.features import create_churn_features
 def get_customer_profile(
     customer_id: str,
     transactions: pd.DataFrame,
-    cutoff_date: pd.Timestamp = CUTOFF_DATE,
+    cutoff_date: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """One-row DataFrame of CoxPH covariates for a given customer."""
+    cutoff_date = _resolve_cutoff(transactions, cutoff_date)
     hist = transactions[
         (transactions["customer_id"] == customer_id)
         & (transactions["transaction_date"] <= cutoff_date)
@@ -53,12 +63,13 @@ def get_monthly_profit(
     lifetime_df: pd.DataFrame,
     transactions: pd.DataFrame,
     bg: Any,
-    cutoff_date: pd.Timestamp = CUTOFF_DATE,
+    cutoff_date: pd.Timestamp | None = None,
 ) -> np.ndarray:
     """
     Expected monthly profit array of length num_months.
     monthly_profit[n] = expected_avg_order_value x BG/NBD purchase increment in month n+1
     """
+    cutoff_date = _resolve_cutoff(transactions, cutoff_date)
     row = lifetime_df.loc[lifetime_df.index == customer_id]
 
     if row.empty or pd.isna(row["expected_avg_order_value"].iloc[0]):
@@ -92,9 +103,10 @@ def get_payback_df(
     cph: Any,
     num_months: int = CLV_HORIZON_MONTHS,
     annual_irr: float = ANNUAL_IRR,
-    cutoff_date: pd.Timestamp = CUTOFF_DATE,
+    cutoff_date: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Survival-weighted NPV table — one row per contract month."""
+    cutoff_date = _resolve_cutoff(transactions, cutoff_date)
     profile = get_customer_profile(customer_id, transactions, cutoff_date)
     tenure = int(profile["tenure"].iloc[0])
     irr = annual_irr / 12
@@ -135,8 +147,9 @@ def score_churn(
     customer_id: str,
     transactions: pd.DataFrame,
     lgbm: Any,
-    cutoff_date: pd.Timestamp = CUTOFF_DATE,
+    cutoff_date: pd.Timestamp | None = None,
 ) -> dict:
+    cutoff_date = _resolve_cutoff(transactions, cutoff_date)
     features = create_churn_features(transactions, cutoff_date)
     row = features[features["customer_id"] == customer_id]
     if row.empty:
@@ -174,8 +187,9 @@ def score_survival(
     customer_id: str,
     transactions: pd.DataFrame,
     cph: Any,
-    cutoff_date: pd.Timestamp = CUTOFF_DATE,
+    cutoff_date: pd.Timestamp | None = None,
 ) -> dict:
+    cutoff_date = _resolve_cutoff(transactions, cutoff_date)
     profile = get_customer_profile(customer_id, transactions, cutoff_date)
     tenure = int(profile["tenure"].iloc[0])
 
@@ -214,8 +228,9 @@ def score_customer(
     gg: Any,
     cph: Any,
     num_months: int = CLV_HORIZON_MONTHS,
-    cutoff_date: pd.Timestamp = CUTOFF_DATE,
+    cutoff_date: pd.Timestamp | None = None,
 ) -> dict:
+    cutoff_date = _resolve_cutoff(transactions, cutoff_date)
     churn = score_churn(customer_id, transactions, lgbm, cutoff_date)
     bgnbd = score_bgnbd(customer_id, lifetime_df, bg, gg)
     surv = score_survival(customer_id, transactions, cph, cutoff_date)
@@ -246,11 +261,12 @@ def score_all_customers(
     bg: Any,
     gg: Any,
     cph: Any,
-    cutoff_date: pd.Timestamp = CUTOFF_DATE,
+    cutoff_date: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """
     Vectorised batch scoring — runs in seconds by avoiding per-customer loops.
     """
+    cutoff_date = _resolve_cutoff(transactions, cutoff_date)
     hist = transactions[transactions["transaction_date"] <= cutoff_date]
 
     # --- Churn features + probabilities (fully vectorised) ---

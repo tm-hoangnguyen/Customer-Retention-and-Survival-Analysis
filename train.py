@@ -95,12 +95,14 @@ def train_churn_classifier(transactions: pd.DataFrame) -> tuple:
 
 def train_bgnbd_gg(transactions: pd.DataFrame) -> tuple:
     print("\n[2/4] Training BG/NBD + Gamma-Gamma...")
+    observation_end = transactions["transaction_date"].max()
+    print(f"  BG/NBD observation period end: {observation_end.date()} (full dataset)")
     lifetime_df = lt.utils.summary_data_from_transaction_data(
         transactions,
         customer_id_col="customer_id",
         datetime_col="transaction_date",
         monetary_value_col="amount",
-        observation_period_end=CUTOFF_DATE,
+        observation_period_end=observation_end,
         freq="D",
     )
 

@@ -155,6 +155,7 @@ def plot_history_alive(
     bg: Any,
     customer_id: str,
     transactions: pd.DataFrame,
+    t: int = 90,
 ) -> plt.Figure:
     customer_txns = (
         transactions[transactions["customer_id"] == customer_id]
@@ -163,13 +164,13 @@ def plot_history_alive(
     fig, ax = plt.subplots()
     lt_plotting.plot_history_alive(
         bg,
-        t=90,
+        t=t,
         transactions=customer_txns,
         datetime_col="transaction_date",
         ax=ax,
     )
     plt.xticks(rotation=45, ha="right")
-    ax.set_title(f"P(alive) History — Customer {customer_id}")
+    ax.set_title(f"P(alive) History — Customer {customer_id} ({t} days)")
     fig.tight_layout()
     return fig
 

@@ -38,6 +38,7 @@ from core.config import (
     CHURN_FEATURES,
     CLV_HORIZON_MONTHS,
     CPH_PATH,
+    GG_DISCOUNT_RATE,
     GG_PATH,
     LGBM_PATH,
     LIFETIME_DF_PATH,
@@ -302,43 +303,119 @@ def page_rfm(transactions: pd.DataFrame, customers: pd.DataFrame):
 # ---------------------------------------------------------------------------
 
 def page_customer_lookup(models: dict, transactions: pd.DataFrame):
+    import matplotlib.pyplot as plt
+    from core.scoring import get_customer_profile, score_bgnbd, score_churn, score_survival
+
     st.header("Customer Lookup")
     st.write("Enter a customer ID to see their full risk and value profile.")
 
     customer_id = st.text_input("Customer ID", value="C01329", placeholder="e.g. C01329")
-    num_months = st.slider("CLV / NPV horizon (months)", min_value=3, max_value=24, value=CLV_HORIZON_MONTHS)
 
     if st.button("Score Customer", type="primary"):
         with st.spinner("Scoring..."):
             try:
-                result = score_customer(
-                    customer_id=customer_id,
-                    transactions=transactions,
-                    lifetime_df=models["lifetime_df"],
-                    lgbm=models["lgbm"],
-                    bg=models["bg"],
-                    gg=models["gg"],
-                    cph=models["cph"],
-                    num_months=num_months,
-                )
+                churn = score_churn(customer_id, transactions, models["lgbm"])
+                bgnbd = score_bgnbd(customer_id, models["lifetime_df"], models["bg"], models["gg"])
+                surv  = score_survival(customer_id, transactions, models["cph"])
             except ValueError as e:
                 st.error(str(e))
-                return
+                # Clear any stale scores for a different customer
+                st.session_state.pop("base_scores", None)
+                st.session_state.pop("scored_customer", None)
+                st.stop()
+
+        st.session_state["base_scores"] = {**churn, **bgnbd, **surv}
+        st.session_state["scored_customer"] = customer_id
+
+    # ── Section 1: slider-independent scores ─────────────────────────────────
+    if st.session_state.get("scored_customer") == customer_id and "base_scores" in st.session_state:
+        scores = st.session_state["base_scores"]
+        scoring_cutoff = transactions["transaction_date"].max()
 
         st.markdown("### Scores")
-        cols = st.columns(3)
-        cols[0].metric("Churn Probability", f"{result['churn_probability']:.1%}", delta=result["churn_label"])
-        cols[1].metric("P(alive) — BG/NBD", f"{result['p_alive']:.1%}")
-        cols[2].metric("Expected Remaining Lifetime", f"{result['expected_remaining_lifetime']:.1f} months")
+        st.caption(
+            f"**Assumption:** scores computed using all transactions up to "
+            f"**{scoring_cutoff.date()}** (latest available date). "
+            f"Training cutoff (2025-10-02) applies only during model training."
+        )
 
-        cols2 = st.columns(2)
-        cols2[0].metric("CLV — BG/NBD + GG", f"${result['clv_bgnbd']:,.2f}")
-        cols2[1].metric("CLV — Survival NPV", f"${result['clv_survival']:,.2f}")
+        cols = st.columns(2)
+        cols[0].metric("Churn Probability", f"{scores['churn_probability']:.1%}", delta=scores["churn_label"])
+        cols[1].metric("Expected Remaining Lifetime", f"{scores['expected_remaining_lifetime']:.1f} months")
 
-        st.markdown("### P(alive) History")
+        st.markdown("### Survival Curve")
         try:
-            fig = plot_history_alive(models["bg"], customer_id, transactions)
-            st.pyplot(fig)
+            profile = get_customer_profile(customer_id, transactions)
+            tenure = int(profile["tenure"].iloc[0])
+            surv_fn = models["cph"].predict_survival_function(profile, conditional_after=[tenure])
+            fig2, ax = plt.subplots(figsize=(8, 4))
+            ax.plot(surv_fn.index, surv_fn.values.flatten(), color="#3498db")
+            ax.axvline(x=tenure, color="gray", linestyle="--", alpha=0.5, label="Current tenure")
+            ax.set_xlabel("Days (lifetime)")
+            ax.set_ylabel("P(survival)")
+            ax.set_title(f"Survival Curve — {customer_id}")
+            ax.legend()
+            fig2.tight_layout()
+            st.pyplot(fig2)
+        except Exception as e:
+            st.warning(f"Could not render survival curve: {e}")
+
+        # ── Section 2: slider-dependent (BG/NBD + NPV) ───────────────────────
+        st.divider()
+        st.markdown("### BG/NBD & Survival-weighted NPV")
+        st.write("Adjust the horizon — all metrics and charts below update accordingly.")
+        num_months = st.slider(
+            "Horizon (months)",
+            min_value=3, max_value=24, value=CLV_HORIZON_MONTHS,
+            key="npv_slider",
+        )
+        t_days = num_months * 30
+
+        # P(alive) metric — display only; value is time-independent by definition
+        # but grouped here so users understand it belongs to the BG/NBD horizon view
+        st.metric("P(alive) — BG/NBD", f"{scores['p_alive']:.1%}")
+
+        # CLV BG/NBD recomputed live for the selected horizon
+        try:
+            row = models["lifetime_df"].loc[models["lifetime_df"].index == customer_id]
+            if not row.empty and float(row["monetary_value"].iloc[0]) > 0:
+                clv_bgnbd_live = float(
+                    models["gg"].customer_lifetime_value(
+                        models["bg"],
+                        row["frequency"],
+                        row["recency"],
+                        row["T"],
+                        row["monetary_value"],
+                        time=num_months,
+                        discount_rate=GG_DISCOUNT_RATE,
+                        freq="D",
+                    ).iloc[0]
+                )
+            else:
+                clv_bgnbd_live = scores["clv_bgnbd"]
+            st.metric(f"CLV — BG/NBD + GG ({num_months}M)", f"${clv_bgnbd_live:,.2f}")
+        except Exception as e:
+            st.warning(f"Could not recompute BG/NBD CLV: {e}")
+
+        st.markdown(f"### P(alive) History ({num_months} months)")
+        try:
+            from lifetimes import plotting as lt_plotting
+            customer_txns = (
+                transactions[transactions["customer_id"] == customer_id]
+                .assign(transaction_date=lambda x: x["transaction_date"].astype("datetime64[ns]"))
+            )
+            fig_alive, ax_alive = plt.subplots()
+            lt_plotting.plot_history_alive(
+                models["bg"],
+                t=t_days,
+                transactions=customer_txns,
+                datetime_col="transaction_date",
+                ax=ax_alive,
+            )
+            plt.xticks(rotation=45, ha="right")
+            ax_alive.set_title(f"P(alive) History — {customer_id} ({num_months} months)")
+            fig_alive.tight_layout()
+            st.pyplot(fig_alive)
         except Exception as e:
             st.warning(f"Could not render P(alive) chart: {e}")
 
@@ -352,6 +429,8 @@ def page_customer_lookup(models: dict, transactions: pd.DataFrame):
                 cph=models["cph"],
                 num_months=num_months,
             )
+            clv_survival = float(payback["Cumulative NPV"].iloc[-1])
+            st.metric("CLV — Survival NPV", f"${clv_survival:,.2f}")
             st.dataframe(payback.style.format({
                 "Survival Probability": "{:.1%}",
                 "Monthly Profit": "${:.2f}",
@@ -360,26 +439,7 @@ def page_customer_lookup(models: dict, transactions: pd.DataFrame):
                 "Cumulative NPV": "${:.2f}",
             }), use_container_width=True)
         except Exception as e:
-            st.warning(f"Could not compute payback table: {e}")
-
-        st.markdown("### Survival Curve")
-        try:
-            import matplotlib.pyplot as plt
-            from core.scoring import get_customer_profile
-            profile = get_customer_profile(customer_id, transactions)
-            tenure = int(profile["tenure"].iloc[0])
-            surv = models["cph"].predict_survival_function(profile, conditional_after=[tenure])
-            fig2, ax = plt.subplots(figsize=(8, 4))
-            ax.plot(surv.index, surv.values.flatten(), color="#3498db")
-            ax.axvline(x=tenure, color="gray", linestyle="--", alpha=0.5, label="Current tenure")
-            ax.set_xlabel("Days (lifetime)")
-            ax.set_ylabel("P(survival)")
-            ax.set_title(f"Survival Curve — {customer_id}")
-            ax.legend()
-            fig2.tight_layout()
-            st.pyplot(fig2)
-        except Exception as e:
-            st.warning(f"Could not render survival curve: {e}")
+            st.warning(f"Could not compute NPV table: {e}")
 
 
 # ---------------------------------------------------------------------------
