@@ -1,0 +1,17 @@
+jupyter
+pandas
+numpy
+matplotlib
+seaborn
+scikit-learn
+scipy
+lightgbm
+xgboost
+shap
+lifetimes
+lifelines
+dill
+fastapi
+uvicorn[standard]
+pydantic
+streamlit
