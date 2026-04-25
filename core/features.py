@@ -26,14 +26,24 @@ def _rfm_segment_rules(row: pd.Series) -> str:
     r, f = row["R_score"], row["F_score"]
     if r >= 4 and f >= 4:
         return "Champions"
-    if r >= 3 and f >= 3:
-        return "Loyal"
-    if r >= 4 and f <= 2:
-        return "New"
-    if r <= 2 and f >= 3:
-        return "At-Risk"
+    if 2 <= r < 4 and f >= 3:
+        return "Loyal Customers"
+    if r <= 2 and f >= 4:
+        return "Cannot Lose Them"
+    if r <= 2 and 2 <= f <= 4:
+        return "At Risk"
     if r <= 2 and f <= 2:
         return "Hibernating"
+    if 2 <= r <= 3 and 2 <= f <= 3:
+        return "Need Attention"
+    if 2 <= r <= 3 and f <= 2:
+        return "About To Sleep"
+    if r >= 3 and 1 <= f <= 3:
+        return "Potential Loyalists"
+    if 3 <= r <= 4 and f <= 1:
+        return "Promising"
+    if r >= 4 and f <= 1:
+        return "New Customers"
     return "Others"
 
 

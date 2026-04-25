@@ -168,24 +168,131 @@ def page_transactions(transactions: pd.DataFrame):
 # Page 1 — RFM Analysis
 # ---------------------------------------------------------------------------
 
+def _rfm_segment_rules(row: pd.Series) -> str:
+    r, f = row["R_score"], row["F_score"]
+    if r >= 4 and f >= 4:
+        return "Champions"
+    if 2 <= r < 4 and f >= 3:
+        return "Loyal Customers"
+    if r <= 2 and f >= 4:
+        return "Cannot Lose Them"
+    if r <= 2 and 2 <= f <= 4:
+        return "At Risk"
+    if r <= 2 and f <= 2:
+        return "Hibernating"
+    if 2 <= r <= 3 and 2 <= f <= 3:
+        return "Need Attention"
+    if 2 <= r <= 3 and f <= 2:
+        return "About To Sleep"
+    if r >= 3 and 1 <= f <= 3:
+        return "Potential Loyalists"
+    if 3 <= r <= 4 and f <= 1:
+        return "Promising"
+    if r >= 4 and f <= 1:
+        return "New Customers"
+    return "Others"
+
+
 def page_rfm(transactions: pd.DataFrame, customers: pd.DataFrame):
+    import matplotlib.patches as mpatches
+    import matplotlib.pyplot as plt
+
     st.header("RFM Customer Segmentation")
     analysis_date = transactions["transaction_date"].max() + pd.Timedelta(days=1)
-    st.write(f"Analysis date: **{analysis_date.date()}**")
 
     with st.spinner("Computing RFM segments..."):
-        rfm_q = compute_rfm_segments(transactions, analysis_date)
-        seg_stats = compute_seg_stats(rfm_q)
+        rfm = transactions.groupby("customer_id").agg(
+            recency=("transaction_date", lambda x: (analysis_date - x.max()).days),
+            frequency=("transaction_date", "count"),
+            monetary=("amount", "sum"),
+        ).reset_index()
 
-    st.markdown("### Segment Summary")
-    display_stats = seg_stats.copy()
-    display_stats["pct"] = display_stats["pct"].map("{:.1%}".format)
-    display_stats["avg_monetary"] = display_stats["avg_monetary"].map("${:.0f}".format)
-    st.dataframe(display_stats, use_container_width=True)
+        rfm_q = rfm.copy()
+        rfm_q["R_score"] = pd.qcut(rfm_q["recency"], q=5, labels=[5, 4, 3, 2, 1]).astype(int)
+        rfm_q["F_score"] = pd.qcut(rfm_q["frequency"].rank(method="first"), q=5, labels=[1, 2, 3, 4, 5]).astype(int)
+        rfm_q["M_score"] = pd.qcut(rfm_q["monetary"].rank(method="first"), q=5, labels=[1, 2, 3, 4, 5]).astype(int)
+        rfm_q["segment"] = rfm_q.apply(_rfm_segment_rules, axis=1)
 
-    st.markdown("### Segmentation Grid")
-    fig = plot_rfm_grid(rfm_q, seg_stats)
+        total_customers = len(rfm_q)
+        seg_stats = (
+            rfm_q.groupby("segment")
+            .agg(count=("customer_id", "count"), avg_monetary=("monetary", "mean"))
+            .reset_index()
+        )
+        seg_stats["pct"] = (seg_stats["count"] / total_customers * 100).round(2)
+        seg_stats = seg_stats.set_index("segment")
+
+    # ── Segmentation Grid (exact notebook code) ──────────────────────────────
+    grid = {
+        "Champions":           (4, 3, 1, 2),
+        "Loyal Customers":     (2, 3, 2, 2),
+        "Cannot Lose Them":    (0, 4, 2, 1),
+        "At Risk":             (0, 2, 2, 2),
+        "Hibernating":         (0, 0, 2, 2),
+        "About To Sleep":      (2, 0, 1, 2),
+        "Need Attention":      (2, 2, 1, 1),
+        "Potential Loyalists": (3, 1, 2, 2),
+        "Promising":           (3, 0, 1, 1),
+        "New Customers":       (4, 0, 1, 1),
+    }
+    colors = {
+        "Champions":           "#5B9BD5",
+        "Loyal Customers":     "#A9B7C6",
+        "Cannot Lose Them":    "#E06666",
+        "At Risk":             "#F6B26B",
+        "Hibernating":         "#B6D7E8",
+        "About To Sleep":      "#CFD8DC",
+        "Need Attention":      "#CEAD00",
+        "Potential Loyalists": "#6FCF97",
+        "Promising":           "#C5E1A5",
+        "New Customers":       "#C5E1A5",
+    }
+
+    fig, ax = plt.subplots(figsize=(24, 10))
+    ax.set_facecolor("#FAFAFA")
+
+    for seg, (x, y, w, h) in grid.items():
+        color = colors.get(seg, "#DDDDDD")
+        rect = mpatches.FancyBboxPatch(
+            (x, y), w, h,
+            boxstyle="round,pad=0.02",
+            linewidth=1.5, edgecolor="white", facecolor=color, alpha=0.85,
+        )
+        ax.add_patch(rect)
+
+        if seg in seg_stats.index:
+            count = int(seg_stats.loc[seg, "count"])
+            pct   = float(seg_stats.loc[seg, "pct"])
+            avg_m = float(seg_stats.loc[seg, "avg_monetary"])
+        else:
+            count, pct, avg_m = 0, 0.0, 0.0
+
+        cx, cy = x + w / 2, y + h / 2
+        ax.text(cx, cy + h * 0.20, seg,
+                ha="center", va="center", fontsize=18, fontweight="bold", color="white")
+        ax.text(cx, cy - h * 0.05, f"Customers: {count:,} ({pct}%)",
+                ha="center", va="center", fontsize=14, color="white")
+        ax.text(cx, cy - h * 0.25, f"Avg. Monetary: ${avg_m:,.2f}",
+                ha="center", va="center", fontsize=14, color="white")
+
+    ax.set_xlim(0, 5)
+    ax.set_ylim(0, 5)
+    ax.set_xlabel("Recency Score", fontsize=16)
+    ax.set_ylabel("Frequency Score", fontsize=16)
+    ax.set_title("RFM Customer Segmentation", fontsize=20, fontweight="bold", pad=15)
+    ax.set_xticks(range(6))
+    ax.set_yticks(range(6))
+    ax.grid(False)
+    fig.tight_layout()
+
     st.pyplot(fig)
+
+    # ── Segment Summary Table ─────────────────────────────────────────────────
+    st.markdown("### Segment Summary")
+    display_stats = seg_stats.reset_index().rename(columns={"pct": "pct (%)"})
+    display_stats["avg_monetary"] = display_stats["avg_monetary"].map("${:,.0f}".format)
+    display_stats = display_stats.sort_values("pct (%)", ascending=False).reset_index(drop=True)
+    st.dataframe(display_stats, use_container_width=True)
 
     st.markdown("### Full RFM Table")
     st.dataframe(rfm_q, use_container_width=True)

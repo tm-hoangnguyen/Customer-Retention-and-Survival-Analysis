@@ -21,42 +21,75 @@ from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
 # ---------------------------------------------------------------------------
 
 SEGMENT_COLORS = {
-    "Champions": "#2ecc71",
-    "Loyal": "#3498db",
-    "New": "#9b59b6",
-    "At-Risk": "#e74c3c",
-    "Hibernating": "#95a5a6",
-    "Others": "#f39c12",
+    "Champions":           "#5B9BD5",
+    "Loyal Customers":     "#A9B7C6",
+    "Cannot Lose Them":    "#E06666",
+    "At Risk":             "#F6B26B",
+    "Hibernating":         "#B6D7E8",
+    "About To Sleep":      "#CFD8DC",
+    "Need Attention":      "#CEAD00",
+    "Potential Loyalists": "#6FCF97",
+    "Promising":           "#C5E1A5",
+    "New Customers":       "#C5E1A5",
+    "Others":              "#DDDDDD",
+}
+
+# Grid layout: segment -> (x_left, y_bottom, width, height) in R×F coordinate space
+_SEGMENT_GRID: dict[str, tuple[float, float, float, float]] = {
+    "Champions":           (4, 3, 1, 2),
+    "Loyal Customers":     (2, 3, 2, 2),
+    "Cannot Lose Them":    (0, 4, 2, 1),
+    "At Risk":             (0, 2, 2, 2),
+    "Hibernating":         (0, 0, 2, 2),
+    "About To Sleep":      (2, 0, 1, 2),
+    "Need Attention":      (2, 2, 1, 1),
+    "Potential Loyalists": (3, 1, 2, 2),
+    "Promising":           (3, 0, 1, 1),
+    "New Customers":       (4, 0, 1, 1),
 }
 
 
 def plot_rfm_grid(rfm_q: pd.DataFrame, seg_stats: pd.DataFrame) -> plt.Figure:
-    fig, ax = plt.subplots(figsize=(24, 10))
-    ax.set_xlim(0, 5)
-    ax.set_ylim(0, 5)
-    ax.set_xlabel("Recency Score", fontsize=13)
-    ax.set_ylabel("Frequency Score", fontsize=13)
-    ax.set_title("RFM Customer Segmentation", fontsize=16, fontweight="bold")
-    ax.set_xticks(range(1, 6))
-    ax.set_yticks(range(1, 6))
+    stats = seg_stats.set_index("segment") if "segment" in seg_stats.columns else seg_stats.copy()
 
-    for _, row in rfm_q.iterrows():
-        r, f, seg = row["R_score"], row["F_score"], row["segment"]
-        color = SEGMENT_COLORS.get(seg, "#bdc3c7")
+    fig, ax = plt.subplots(figsize=(24, 10))
+    ax.set_facecolor("#FAFAFA")
+
+    for seg, (x, y, w, h) in _SEGMENT_GRID.items():
+        color = SEGMENT_COLORS.get(seg, "#DDDDDD")
         rect = patches.FancyBboxPatch(
-            (r - 0.45, f - 0.45), 0.9, 0.9,
-            boxstyle="round,pad=0.05",
-            linewidth=0.3,
+            (x, y), w, h,
+            boxstyle="round,pad=0.02",
+            linewidth=1.5,
             edgecolor="white",
             facecolor=color,
-            alpha=0.6,
+            alpha=0.85,
         )
         ax.add_patch(rect)
 
-    handles = [
-        patches.Patch(facecolor=c, label=s) for s, c in SEGMENT_COLORS.items()
-    ]
-    ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(1.01, 1), fontsize=10)
+        if seg in stats.index:
+            count   = int(stats.loc[seg, "count"])
+            pct     = float(stats.loc[seg, "pct"])      # ratio 0-1
+            avg_m   = float(stats.loc[seg, "avg_monetary"])
+        else:
+            count, pct, avg_m = 0, 0.0, 0.0
+
+        cx, cy = x + w / 2, y + h / 2
+        ax.text(cx, cy + h * 0.20, seg,
+                ha="center", va="center", fontsize=18, fontweight="bold", color="white")
+        ax.text(cx, cy - h * 0.05, f"Customers: {count:,} ({pct:.2%})",
+                ha="center", va="center", fontsize=14, color="white")
+        ax.text(cx, cy - h * 0.25, f"Avg. Monetary: ${avg_m:,.2f}",
+                ha="center", va="center", fontsize=14, color="white")
+
+    ax.set_xlim(0, 5)
+    ax.set_ylim(0, 5)
+    ax.set_xlabel("Recency Score", fontsize=16)
+    ax.set_ylabel("Frequency Score", fontsize=16)
+    ax.set_title("RFM Customer Segmentation", fontsize=20, fontweight="bold", pad=15)
+    ax.set_xticks(range(6))
+    ax.set_yticks(range(6))
+    ax.grid(False)
     fig.tight_layout()
     return fig
 
