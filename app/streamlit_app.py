@@ -31,6 +31,7 @@ from core.charts import (
     plot_survival_curves,
 )
 from core.config import (
+    ANNUAL_IRR,
     ARTIFACTS_DIR,
     BEST_THRESHOLD_PATH,
     BG_PATH,
@@ -41,6 +42,7 @@ from core.config import (
     CLV_HORIZON_MONTHS,
     CPH_PATH,
     CUTOFF_DATE,
+    GG_CLV_HORIZON_MONTHS,
     GG_DISCOUNT_RATE,
     GG_PATH,
     LGBM_PATH,
@@ -444,14 +446,20 @@ def page_customer_lookup(models: dict, transactions: pd.DataFrame):
         st.write("Adjust the horizon — all metrics and charts below update accordingly.")
         num_months = st.slider(
             "Horizon (months)",
-            min_value=3, max_value=24, value=CLV_HORIZON_MONTHS,
+            min_value=3, max_value=24, value=GG_CLV_HORIZON_MONTHS,
             key="npv_slider",
         )
         t_days = num_months * 30
 
-        # P(alive) metric — display only; value is time-independent by definition
-        # but grouped here so users understand it belongs to the BG/NBD horizon view
-        st.metric("P(alive) — BG/NBD", f"{scores['p_alive']:.1%}")
+        st.caption(
+            f"**BG/NBD + Gamma-Gamma assumptions** — "
+            f"Observation period end: **2025-12-31** (full-year data; BG/NBD and Gamma-Gamma retrained with all transactions). "
+            f"Monthly discount rate: **{GG_DISCOUNT_RATE:.0%}** (passed to `gg.customer_lifetime_value`). "
+            f"CLV is recomputed live for the selected horizon using the customer's fitted frequency, recency, T, and monetary value. "
+            f"The first transaction is treated as the customer's entry point (defining T and recency) and is excluded from frequency — "
+            f"the model only learns purchase and churn rates from repeat behaviour. "
+            f"Customers with only one purchase (frequency = 0) are excluded from Gamma-Gamma fitting (no repeat spend to model) and their CLV is shown as **$0.00**."
+        )
 
         # CLV BG/NBD recomputed live for the selected horizon
         try:
@@ -471,7 +479,7 @@ def page_customer_lookup(models: dict, transactions: pd.DataFrame):
                 )
             else:
                 clv_bgnbd_live = scores["clv_bgnbd"]
-            st.metric(f"CLV — BG/NBD + GG ({num_months}M)", f"${clv_bgnbd_live:,.2f}")
+            st.metric(f"CLV — BG/NBD + Gamma-Gamma ({num_months}M)", f"${clv_bgnbd_live:,.2f}")
         except Exception as e:
             st.warning(f"Could not recompute BG/NBD CLV: {e}")
 
@@ -482,7 +490,7 @@ def page_customer_lookup(models: dict, transactions: pd.DataFrame):
                 transactions[transactions["customer_id"] == customer_id]
                 .assign(transaction_date=lambda x: x["transaction_date"].astype("datetime64[ns]"))
             )
-            fig_alive, ax_alive = plt.subplots()
+            fig_alive, ax_alive = plt.subplots(figsize=(9, 4))
             lt_plotting.plot_history_alive(
                 models["bg"],
                 t=t_days,
@@ -492,12 +500,38 @@ def page_customer_lookup(models: dict, transactions: pd.DataFrame):
             )
             plt.xticks(rotation=45, ha="right")
             ax_alive.set_title(f"P(alive) History — {customer_id} ({num_months} months)")
-            fig_alive.tight_layout()
+
+            # Annotate the second purchase (first repeat transaction = first red dashed line)
+            sorted_dates = sorted(customer_txns["transaction_date"].unique())
+            if len(sorted_dates) >= 2:
+                second_purchase = pd.Timestamp(sorted_dates[1])
+                ax_alive.annotate(
+                    f"2nd purchase\n{second_purchase.date()}",
+                    xy=(second_purchase, 1.0),
+                    xytext=(second_purchase, 1.14),
+                    xycoords=("data", "axes fraction"),
+                    textcoords=("data", "axes fraction"),
+                    fontsize=8, color="#27ae60", ha="center", va="bottom",
+                    annotation_clip=False,
+                    arrowprops=dict(arrowstyle="->", color="#27ae60", lw=1,
+                                    connectionstyle="arc3,rad=0.0"),
+                )
+                fig_alive.subplots_adjust(top=0.82)
+
             st.pyplot(fig_alive)
         except Exception as e:
             st.warning(f"Could not render P(alive) chart: {e}")
 
         st.markdown(f"### Survival-weighted NPV ({num_months} months)")
+        st.caption(
+            f"**Survival-weighted NPV assumptions** — "
+            f"Projection anchor: **2025-12-31** (same as BG/NBD + GG, enabling direct comparison). "
+            f"Monthly discount rate: **{ANNUAL_IRR/12:.2%}** (= {ANNUAL_IRR:.0%} annual IRR ÷ 12). "
+            f"Survival probability: CoxPH conditional survival S(t | alive at tenure), where tenure is days from first purchase to 2025-12-31. "
+            f"Monthly profit: BG/NBD predicted purchase increment × Gamma-Gamma expected order value. "
+            f"Known limitation: CoxPH was trained with features as of **{CUTOFF_DATE.date()}** — "
+            f"the 90-day feature shift to Dec 31 introduces a small covariate bias in the survival estimates."
+        )
         try:
             payback = get_payback_df(
                 customer_id=customer_id,

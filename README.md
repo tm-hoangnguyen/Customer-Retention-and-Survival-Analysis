@@ -85,8 +85,9 @@ Interactive docs at [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ## Model Cutoff Dates
 
-| Model | Training cutoff | Notes |
-|---|---|---|
-| LightGBM churn | `2025-10-02` | Features Jan–Oct 2; labels Oct 2 – Dec 31 (90-day window) |
-| BG/NBD + Gamma-Gamma | `2025-12-31` | Full year for most accurate alive probability and CLV |
-| CoxPH survival | `2025-10-02` | Tenure and event detection require a future observation window |
+| Model / metric | Training cutoff | Scoring cutoff | Notes |
+|---|---|---|---|
+| LightGBM churn | `2025-10-02` | `2025-10-02` | Features Jan–Oct 2; labels Oct 2 – Dec 31 (90-day window) |
+| BG/NBD + Gamma-Gamma | `2025-12-31` | `2025-12-31` | Full year for most accurate P(alive) and CLV |
+| CoxPH survival curve | `2025-10-02` | `2025-10-02` | Trained with `CUTOFF_DATE`; churn probability and survival curve scored at the same cutoff |
+| CLV Survival NPV | `2025-10-02` | `2025-12-31` | CoxPH model trained at Oct 2; tenure and forward projections anchored to `max(transaction_date)` |

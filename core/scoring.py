@@ -119,6 +119,15 @@ def get_payback_df(
     surv = cph.predict_survival_function(profile, conditional_after=[tenure], times=time_points)
     surv_values = surv.iloc[:, 0].values
 
+    month0 = pd.DataFrame({
+        "Contract Month": [0],
+        "Survival Probability": [1.0],
+        "Monthly Profit": [0.0],
+        "Avg Expected Monthly Profit": [0.0],
+        "NPV of Avg Expected Monthly Profit": [0.0],
+        "Cumulative NPV": [0.0],
+    })
+
     df = pd.DataFrame({
         "Contract Month": range(1, num_months + 1),
         "Survival Probability": np.round(surv_values, 4),
@@ -129,7 +138,8 @@ def get_payback_df(
         df["Avg Expected Monthly Profit"] / ((1 + irr) ** df["Contract Month"]), 2
     )
     df["Cumulative NPV"] = df["NPV of Avg Expected Monthly Profit"].cumsum().round(2)
-    return df.set_index("Contract Month")
+
+    return pd.concat([month0, df], ignore_index=True).set_index("Contract Month")
 
 
 # ---------------------------------------------------------------------------
