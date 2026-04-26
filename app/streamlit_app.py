@@ -36,6 +36,8 @@ from core.config import (
     BG_PATH,
     CHURN_DATA_PATH,
     CHURN_FEATURES,
+    CHURN_HIGH_RISK_THRESHOLD,
+    CHURN_MEDIUM_RISK_THRESHOLD,
     CLV_HORIZON_MONTHS,
     CPH_PATH,
     CUTOFF_DATE,
@@ -338,13 +340,31 @@ def page_customer_lookup(models: dict, transactions: pd.DataFrame):
         st.caption(
             f"**Churn Probability** is scored at the training cutoff **{CUTOFF_DATE.date()}** "
             f"(predicts whether the customer will buy in the 90-day window Oct 2 → Dec 31, 2025). "
+            f"Risk label: **high_risk** ≥ 60%, **medium_risk** 40–59%, **low_risk** < 40%. "
             f"**Expected Remaining Lifetime** is the number of months from **{CUTOFF_DATE.date()}** "
             f"until the conditional survival probability first drops to or below 0.5 — "
             f"i.e. the point at which there is less than a 50% chance the customer is still active."
         )
 
         cols = st.columns(2)
-        cols[0].metric("Churn Probability", f"{scores['churn_probability']:.1%}", delta=scores["churn_label"])
+        prob = scores["churn_probability"]
+        label = scores["churn_label"]
+        if prob >= CHURN_HIGH_RISK_THRESHOLD:
+            border, text = "#e74c3c", "#e74c3c"
+        elif prob >= CHURN_MEDIUM_RISK_THRESHOLD:
+            border, text = "#f39c12", "#f39c12"
+        else:
+            border, text = "#27ae60", "#27ae60"
+        bg = "transparent"
+        cols[0].markdown(
+            f"""<div style="border-left:4px solid {border}; background:{bg};
+                            padding:10px 16px; border-radius:4px; line-height:1.4;">
+                <div style="font-size:0.85em; color:#555;">Churn Probability</div>
+                <div style="font-size:2em; font-weight:700; color:{text};">{prob:.1%}</div>
+                <div style="font-size:0.85em; color:{text};">{label}</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
         cols[1].metric("Expected Remaining Lifetime", f"{scores['expected_remaining_lifetime']:.1f} months")
 
         st.markdown("### Survival Curve (CoxPH)")

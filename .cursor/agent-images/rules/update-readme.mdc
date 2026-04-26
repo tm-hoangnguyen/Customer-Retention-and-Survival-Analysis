@@ -1,0 +1,33 @@
+---
+description: Always update README.md when implementing a new feature in this project
+alwaysApply: true
+---
+
+# README Update Policy
+
+After implementing any new feature, always update `README.md` before finishing.
+
+## What counts as a new feature
+
+- A new dashboard page or section in `app/streamlit_app.py`
+- A new scoring function or batch utility in `core/scoring.py`
+- A new model, artifact, or training step in `train.py`
+- A new API endpoint or router in `api/routers/`
+- A new config constant that changes behaviour (not just a rename)
+- A new module added to `core/`
+
+## What to update
+
+| README section | Update when… |
+|---|---|
+| **Project Structure** | A new file or directory is added |
+| **Dashboard Pages** table | A new Streamlit page is added or renamed |
+| **Model Cutoff Dates** table | A new model is trained or a cutoff changes |
+| **Quickstart** | The run/train steps change |
+
+## Rules
+
+- Edit the existing section — do not add a new top-level section unless the feature genuinely has no home.
+- Keep descriptions to one sentence.
+- Never update the README for refactors, bug fixes, or comment changes — only net-new user-visible functionality.
+- Update `README.md` in the **same task/turn** as the feature, not as a follow-up.
