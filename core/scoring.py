@@ -15,6 +15,7 @@ from core.config import (
     CHURN_HIGH_RISK_THRESHOLD,
     CHURN_MEDIUM_RISK_THRESHOLD,
     CLV_HORIZON_MONTHS,
+    CUTOFF_DATE,
     GG_CLV_HORIZON_MONTHS,
     GG_DISCOUNT_RATE,
 )
@@ -147,9 +148,8 @@ def score_churn(
     customer_id: str,
     transactions: pd.DataFrame,
     lgbm: Any,
-    cutoff_date: pd.Timestamp | None = None,
+    cutoff_date: pd.Timestamp = CUTOFF_DATE,
 ) -> dict:
-    cutoff_date = _resolve_cutoff(transactions, cutoff_date)
     features = create_churn_features(transactions, cutoff_date)
     row = features[features["customer_id"] == customer_id]
     if row.empty:
@@ -187,9 +187,8 @@ def score_survival(
     customer_id: str,
     transactions: pd.DataFrame,
     cph: Any,
-    cutoff_date: pd.Timestamp | None = None,
+    cutoff_date: pd.Timestamp = CUTOFF_DATE,
 ) -> dict:
-    cutoff_date = _resolve_cutoff(transactions, cutoff_date)
     profile = get_customer_profile(customer_id, transactions, cutoff_date)
     tenure = int(profile["tenure"].iloc[0])
 
@@ -203,7 +202,8 @@ def score_survival(
     ]
 
     full_surv = cph.predict_survival_function(profile, conditional_after=[tenure])
-    below = full_surv[full_surv.iloc[:, 0] <= 0.5]
+    expected_remaining_lifetime_threshold = 0.5
+    below = full_surv[full_surv.iloc[:, 0] <= expected_remaining_lifetime_threshold]
     if below.empty:
         expected_remaining = float(full_surv.index[-1]) - tenure
     else:
@@ -230,12 +230,14 @@ def score_customer(
     num_months: int = CLV_HORIZON_MONTHS,
     cutoff_date: pd.Timestamp | None = None,
 ) -> dict:
-    cutoff_date = _resolve_cutoff(transactions, cutoff_date)
-    churn = score_churn(customer_id, transactions, lgbm, cutoff_date)
+    # Churn + survival snapshot: both use CUTOFF_DATE so metrics share the same Oct 2 reference
+    # NPV / CLV: uses latest available date for maximum accuracy in forward projections
+    npv_cutoff = _resolve_cutoff(transactions, cutoff_date)
+    churn = score_churn(customer_id, transactions, lgbm, CUTOFF_DATE)
     bgnbd = score_bgnbd(customer_id, lifetime_df, bg, gg)
-    surv = score_survival(customer_id, transactions, cph, cutoff_date)
+    surv = score_survival(customer_id, transactions, cph, CUTOFF_DATE)
     payback = get_payback_df(
-        customer_id, transactions, lifetime_df, bg, cph, num_months, ANNUAL_IRR, cutoff_date
+        customer_id, transactions, lifetime_df, bg, cph, num_months, ANNUAL_IRR, npv_cutoff
     )
     clv_survival = float(payback["Cumulative NPV"].iloc[-1])
 
@@ -265,12 +267,15 @@ def score_all_customers(
 ) -> pd.DataFrame:
     """
     Vectorised batch scoring — runs in seconds by avoiding per-customer loops.
+    Churn features use CUTOFF_DATE (training cutoff) for distributional consistency.
+    Survival / CLV use the latest available transaction date for accuracy.
     """
-    cutoff_date = _resolve_cutoff(transactions, cutoff_date)
-    hist = transactions[transactions["transaction_date"] <= cutoff_date]
+    survival_cutoff = _resolve_cutoff(transactions, cutoff_date)
+    hist = transactions[transactions["transaction_date"] <= survival_cutoff]
 
     # --- Churn features + probabilities (fully vectorised) ---
-    churn_features = create_churn_features(transactions, cutoff_date)
+    # Always use training CUTOFF_DATE so features match the training distribution
+    churn_features = create_churn_features(transactions, CUTOFF_DATE)
     churn_probas = lgbm.predict_proba(churn_features[CHURN_FEATURES])[:, 1]
     churn_df = churn_features[["customer_id"]].copy()
     churn_df["churn_probability"] = np.round(churn_probas, 4)
@@ -297,7 +302,7 @@ def score_all_customers(
         num_transactions=("transaction_date", "count"),
         avg_amount=("amount", "mean"),
     ).reset_index()
-    profile_df["tenure"] = (cutoff_date - profile_df["first_txn_date"]).dt.days
+    profile_df["tenure"] = (survival_cutoff - profile_df["first_txn_date"]).dt.days
 
     # Predict full survival function for all customers at once
     cox_input = profile_df[["num_transactions", "avg_amount", "tenure"]].copy()

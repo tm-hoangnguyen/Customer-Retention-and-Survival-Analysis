@@ -38,6 +38,7 @@ from core.config import (
     CHURN_FEATURES,
     CLV_HORIZON_MONTHS,
     CPH_PATH,
+    CUTOFF_DATE,
     GG_DISCOUNT_RATE,
     GG_PATH,
     LGBM_PATH,
@@ -304,6 +305,7 @@ def page_rfm(transactions: pd.DataFrame, customers: pd.DataFrame):
 
 def page_customer_lookup(models: dict, transactions: pd.DataFrame):
     import matplotlib.pyplot as plt
+    import numpy as np
     from core.scoring import get_customer_profile, score_bgnbd, score_churn, score_survival
 
     st.header("Customer Lookup")
@@ -332,29 +334,85 @@ def page_customer_lookup(models: dict, transactions: pd.DataFrame):
         scores = st.session_state["base_scores"]
         scoring_cutoff = transactions["transaction_date"].max()
 
-        st.markdown("### Scores")
+        st.markdown("### Churn Classification with LightGBM")
         st.caption(
-            f"**Assumption:** scores computed using all transactions up to "
-            f"**{scoring_cutoff.date()}** (latest available date). "
-            f"Training cutoff (2025-10-02) applies only during model training."
+            f"**Churn Probability** is scored at the training cutoff **{CUTOFF_DATE.date()}** "
+            f"(predicts whether the customer will buy in the 90-day window Oct 2 → Dec 31, 2025). "
+            f"**Expected Remaining Lifetime** is the number of months from **{CUTOFF_DATE.date()}** "
+            f"until the conditional survival probability first drops to or below 0.5 — "
+            f"i.e. the point at which there is less than a 50% chance the customer is still active."
         )
 
         cols = st.columns(2)
         cols[0].metric("Churn Probability", f"{scores['churn_probability']:.1%}", delta=scores["churn_label"])
         cols[1].metric("Expected Remaining Lifetime", f"{scores['expected_remaining_lifetime']:.1f} months")
 
-        st.markdown("### Survival Curve")
+        st.markdown("### Survival Curve (CoxPH)")
+        st.markdown(
+            f"<small>"
+            f"<b>Gray dashed</b> — past: S(t) from first purchase to cut-off ({CUTOFF_DATE.date()}), "
+            f"using this customer's covariates (transaction count, avg order value, tenure). "
+            f"<b>Blue solid</b> — future: the same S(t) curve continuing past the cut-off on the same absolute scale "
+            f". Both segments are one continuous CoxPH prediction; the split at the cut-off "
+            f"marks where observed history ends and the forward projection begins. "
+            f"The CoxPH model uses <code>true_lifetime_days</code> from <code>customers.csv</code> as the "
+            f"duration column, with <code>tenure</code> as the left-truncation entry point."
+            f"</small>",
+            unsafe_allow_html=True,
+        )
         try:
-            profile = get_customer_profile(customer_id, transactions)
+            profile = get_customer_profile(customer_id, transactions, CUTOFF_DATE)
             tenure = int(profile["tenure"].iloc[0])
-            surv_fn = models["cph"].predict_survival_function(profile, conditional_after=[tenure])
-            fig2, ax = plt.subplots(figsize=(8, 4))
-            ax.plot(surv_fn.index, surv_fn.values.flatten(), color="#3498db")
-            ax.axvline(x=tenure, color="gray", linestyle="--", alpha=0.5, label="Current tenure")
-            ax.set_xlabel("Days (lifetime)")
+            first_purchase_date = transactions[
+                transactions["customer_id"] == customer_id
+            ]["transaction_date"].min()
+
+            # Unconditional S(t) for the full time grid
+            surv_uncond = models["cph"].predict_survival_function(profile)
+            t_grid = surv_uncond.index.values
+            s_grid = surv_uncond.iloc[:, 0].values
+
+            # Past segment: (0, 1.0) → ... → (tenure, S(tenure))
+            past_t = np.concatenate([[0], t_grid[t_grid <= tenure], [tenure]])
+            past_s = np.interp(past_t, t_grid, s_grid)
+
+            # Future segment: continues on the same absolute scale — no normalisation
+            future_t = np.concatenate([[tenure], t_grid[t_grid > tenure]])
+            future_s = np.interp(future_t, t_grid, s_grid)
+
+            fig2, ax = plt.subplots(figsize=(9, 4))
+
+            # Past: gray dashed — already survived this portion
+            ax.plot(past_t, past_s, color="#95a5a6", lw=1.5, linestyle="--",
+                    label=f"Past (unconditional) — up to {CUTOFF_DATE.date()}")
+
+            # Future: solid blue — forward projection on the same absolute scale
+            ax.plot(future_t, future_s, color="#3498db", lw=2,
+                    label="Future projection")
+
+            # Cutoff vertical line
+            ax.axvline(x=tenure, color="#e74c3c", linestyle=":", lw=1.5, alpha=0.8,
+                       label=f"Cut-off: {CUTOFF_DATE.date()} (day {tenure})")
+
+            # First purchase annotation — label sits in the left margin, arrow points into the chart
+            ax.annotate(
+                f"First purchase\n{first_purchase_date.date()}",
+                xy=(0, 1.0),
+                xytext=(0.07, 1.15),
+                xycoords=("axes fraction", "data"),
+                textcoords=("axes fraction", "data"),
+                fontsize=8, color="#27ae60", ha="right", va="top",
+                arrowprops=dict(arrowstyle="->", color="#27ae60", lw=1,
+                                connectionstyle="arc3,rad=0.0"),
+            )
+
+            ax.set_xlim(left=0)
+            ax.set_ylim(0, 1.05)
+            fig2.subplots_adjust(left=0.18)
+            ax.set_xlabel("Days since first purchase")
             ax.set_ylabel("P(survival)")
             ax.set_title(f"Survival Curve — {customer_id}")
-            ax.legend()
+            ax.legend(fontsize=8)
             fig2.tight_layout()
             st.pyplot(fig2)
         except Exception as e:
