@@ -65,7 +65,6 @@ CHURN_FEATURES: list[str] = [
     "freq_90d",
     "amount_30d",
     "amount_90d",
-    "freq_past_90d_to_cutoff",
     "freq_past_270d_to_180d",
     "max_gap",
     "freq30/90",

@@ -138,8 +138,14 @@ def plot_confusion_matrix(
 
 def plot_shap_summary(explainer: Any, X_test: pd.DataFrame) -> plt.Figure:
     shap_values = explainer.shap_values(X_test)
+    # Newer SHAP returns a list [class_0, class_1] for binary classifiers — always use class 1 (churn)
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1]
+    import numpy as np
     shap.summary_plot(shap_values, X_test, show=False)
-    plt.title("SHAP Feature Importance (LightGBM)")
+    plt.title("SHAP Feature Importance (LightGBM — churn class)")
+    clip = float(np.percentile(np.abs(shap_values), 99)) * 1.2
+    plt.xlim(-clip, clip)
     fig = plt.gcf()
     fig.tight_layout()
     return fig
@@ -151,8 +157,14 @@ def plot_shap_summary(explainer: Any, X_test: pd.DataFrame) -> plt.Figure:
 
 def plot_shap_force(explainer: Any, X_test: pd.DataFrame, idx: int) -> plt.Figure:
     shap_values = explainer.shap_values(X_test)
+    # Newer SHAP returns a list [class_0, class_1] for binary classifiers — always use class 1 (churn)
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1]
+        expected_value = explainer.expected_value[1]
+    else:
+        expected_value = explainer.expected_value
     shap.force_plot(
-        explainer.expected_value,
+        expected_value,
         shap_values[idx],
         X_test.iloc[idx],
         matplotlib=True,

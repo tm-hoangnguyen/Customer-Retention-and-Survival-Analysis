@@ -45,8 +45,10 @@ from core.config import (
     GG_CLV_HORIZON_MONTHS,
     GG_DISCOUNT_RATE,
     GG_PATH,
+    LGBM_PARAMS,
     LGBM_PATH,
     LIFETIME_DF_PATH,
+    PREDICTION_WINDOW,
     SCORES_DF_PATH,
     SURVIVAL_DF_PATH,
 )
@@ -64,8 +66,18 @@ def _load(path: Path):
             return dill.load(f)
 
 
+def _artifact_mtimes() -> tuple[float, ...]:
+    """Return a tuple of artifact modification times — used as cache key for load_models."""
+    paths = [
+        LGBM_PATH, BG_PATH, GG_PATH, CPH_PATH,
+        BEST_THRESHOLD_PATH, LIFETIME_DF_PATH, SURVIVAL_DF_PATH,
+        CHURN_DATA_PATH, SCORES_DF_PATH,
+    ]
+    return tuple(p.stat().st_mtime if p.exists() else 0.0 for p in paths)
+
+
 @st.cache_resource(show_spinner="Loading models...")
-def load_models():
+def load_models(mtimes: tuple[float, ...]):  # mtimes is the cache-busting key
     return {
         "lgbm": _load(LGBM_PATH),
         "bg": _load(BG_PATH),
@@ -591,6 +603,16 @@ def page_model_performance(models: dict):
         st.pyplot(fig_kde)
 
     with tab3:
+        st.caption(
+            f"**Model:** LightGBM binary classifier — "
+            f"training cutoff: **{CUTOFF_DATE.date()}**, "
+            f"label window: **{PREDICTION_WINDOW} days** (Oct 2 → Dec 31, 2025). "
+            f"Hyperparameters: n_estimators={LGBM_PARAMS['n_estimators']}, "
+            f"learning_rate={LGBM_PARAMS['learning_rate']}, "
+            f"max_depth={LGBM_PARAMS['max_depth']}, "
+            f"objective={LGBM_PARAMS['objective']}, "
+            f"metric={LGBM_PARAMS['metric']}."
+        )
         st.write("Feature importance via SHAP values (LightGBM).")
         import shap
         with st.spinner("Computing SHAP values..."):
@@ -676,7 +698,7 @@ def main():
         st.code("python train.py", language="bash")
         return
 
-    models = load_models()
+    models = load_models(_artifact_mtimes())
     transactions, customers = load_data()
 
     page = st.sidebar.radio(
