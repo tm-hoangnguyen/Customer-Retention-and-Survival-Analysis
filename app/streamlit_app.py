@@ -567,9 +567,16 @@ def page_model_performance(models: dict):
     X_test = test[CHURN_FEATURES]
     y_test = test["churn"].astype(int)
 
-    tab1, tab2, tab3 = st.tabs(["Confusion Matrix", "SHAP Summary", "SHAP Force Plot"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Confusion Matrix", "Gamma-Gamma", "SHAP Summary", "SHAP Force Plot"])
 
     with tab1:
+        st.caption(
+            f"Threshold for the **LightGBM churn classifier**. "
+            f"Predicted probabilities above this value are labelled **churned** (positive class). "
+            f"Default is the F1-optimal threshold found during training ({float(models['best_threshold']):.2f}). "
+            f"Lower it → more customers flagged as churned: **FN decreases, FP increases** (higher recall, lower precision). "
+            f"Raise it → only flag high-confidence churners: **FP decreases, FN increases** (higher precision, lower recall)."
+        )
         threshold = st.slider(
             "Classification threshold",
             min_value=0.1, max_value=0.9,
@@ -579,6 +586,11 @@ def page_model_performance(models: dict):
         st.pyplot(fig)
 
     with tab2:
+        st.markdown("### Gamma-Gamma Amount Distribution")
+        fig_kde = plot_gamma_kde(models["gg"])
+        st.pyplot(fig_kde)
+
+    with tab3:
         st.write("Feature importance via SHAP values (LightGBM).")
         import shap
         with st.spinner("Computing SHAP values..."):
@@ -586,7 +598,7 @@ def page_model_performance(models: dict):
             fig = plot_shap_summary(explainer, X_test)
         st.pyplot(fig)
 
-    with tab3:
+    with tab4:
         idx = st.number_input("Row index in test set", min_value=0, max_value=len(X_test) - 1, value=1)
         import shap
         with st.spinner("Computing SHAP force plot..."):
@@ -594,13 +606,6 @@ def page_model_performance(models: dict):
             fig = plot_shap_force(explainer, X_test, int(idx))
         st.pyplot(fig)
 
-    st.markdown("### Gamma-Gamma Amount Distribution")
-    fig_kde = plot_gamma_kde(models["gg"])
-    st.pyplot(fig_kde)
-
-    st.markdown("### Sample Survival Curves (CoxPH)")
-    fig_surv = plot_survival_curves(models["cph"], models["survival_df"])
-    st.pyplot(fig_surv)
 
 
 # ---------------------------------------------------------------------------

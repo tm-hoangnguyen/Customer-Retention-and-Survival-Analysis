@@ -112,6 +112,22 @@ def plot_confusion_matrix(
         values_format=".1%", ax=ax
     )
     ax.set_title(f"Confusion Matrix (threshold={threshold:.2f})")
+
+    # Label each quadrant with TP / FP / FN / TN in the bottom-left corner
+    # Layout (imshow, y-axis inverted): row=actual, col=predicted
+    #   (row=0, col=0) = True No Churn, Pred No Churn → TN
+    #   (row=0, col=1) = True No Churn, Pred Churn    → FP
+    #   (row=1, col=0) = True Churn,    Pred No Churn → FN
+    #   (row=1, col=1) = True Churn,    Pred Churn    → TP
+    quadrant_labels = {(0, 0): "TN", (0, 1): "FP", (1, 0): "FN", (1, 1): "TP"}
+    for (row, col), label in quadrant_labels.items():
+        ax.text(
+            col - 0.45, row + 0.42, label,
+            ha="left", va="top",
+            fontsize=9, fontweight="bold",
+            color="white",
+        )
+
     fig.tight_layout()
     return fig
 
