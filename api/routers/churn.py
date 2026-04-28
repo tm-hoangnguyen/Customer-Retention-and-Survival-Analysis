@@ -1,10 +1,20 @@
 from fastapi import APIRouter, HTTPException, Request
 
-from api.schemas import PredictChurnRequest, PredictChurnResponse
-from core.config import PREDICTION_WINDOW
+from api.schemas import (
+    ChurnAssumptions,
+    PredictChurnRequest,
+    PredictChurnResponse,
+)
+from core.config import CUTOFF_DATE, PREDICTION_WINDOW
 from core.scoring import score_churn
 
 router = APIRouter()
+
+
+_CHURN_ASSUMPTIONS = ChurnAssumptions(
+    churn_cutoff_date=str(CUTOFF_DATE.date()),
+    training_prediction_window_days=PREDICTION_WINDOW,
+)
 
 
 @router.post("/predict_churn", response_model=PredictChurnResponse)
@@ -33,4 +43,5 @@ async def predict_churn_endpoint(body: PredictChurnRequest, request: Request):
         churn_probability=result["churn_probability"],
         churn_label=result["churn_label"],
         note=note,
+        assumptions=_CHURN_ASSUMPTIONS,
     )

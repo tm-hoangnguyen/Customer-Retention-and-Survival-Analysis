@@ -169,12 +169,23 @@ def score_churn(
     return {"churn_probability": round(prob, 4), "churn_label": _churn_label(prob)}
 
 
+def bgnbd_gg_horizon_floor(horizon_months: int) -> int:
+    """Mirror Streamlit CLV slider (min 3 months) before GG customer_lifetime_value."""
+    return max(int(horizon_months), 3)
+
+
 def score_bgnbd(
     customer_id: str,
     lifetime_df: pd.DataFrame,
     bg: Any,
     gg: Any,
+    *,
+    horizon_months: int | None = None,
 ) -> dict:
+    """
+    If ``horizon_months`` is set, recomputes CLV via ``gg.customer_lifetime_value``
+    at that horizon (same as Streamlit). Otherwise reads precomputed ``CLV_3M`` column.
+    """
     row = lifetime_df.loc[lifetime_df.index == customer_id]
     if row.empty:
         raise ValueError(f"Customer '{customer_id}' not in lifetime_df")
@@ -189,7 +200,29 @@ def score_bgnbd(
         )[0]
     )
 
-    clv_val = float(row["CLV_3M"].iloc[0]) if not pd.isna(row.get("CLV_3M", pd.Series([np.nan])).iloc[0]) else 0.0
+    if horizon_months is not None:
+        t_h = bgnbd_gg_horizon_floor(horizon_months)
+        mv = float(row["monetary_value"].iloc[0])
+        if mv > 0:
+            clv_raw = gg.customer_lifetime_value(
+                bg,
+                row["frequency"],
+                row["recency"],
+                row["T"],
+                row["monetary_value"],
+                time=t_h,
+                discount_rate=GG_DISCOUNT_RATE,
+                freq="D",
+            )
+            clv_val = float(clv_raw.iloc[0])
+        else:
+            clv_val = (
+                float(row["CLV_3M"].iloc[0])
+                if not pd.isna(row.get("CLV_3M", pd.Series([np.nan])).iloc[0])
+                else 0.0
+            )
+    else:
+        clv_val = float(row["CLV_3M"].iloc[0]) if not pd.isna(row.get("CLV_3M", pd.Series([np.nan])).iloc[0]) else 0.0
     return {"p_alive": round(p_alive, 4), "clv_bgnbd": round(clv_val, 2)}
 
 
