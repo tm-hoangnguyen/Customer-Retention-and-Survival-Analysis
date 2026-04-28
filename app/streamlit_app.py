@@ -10,6 +10,7 @@ Run:
 """
 from __future__ import annotations
 
+import importlib
 import pickle
 import sys
 from pathlib import Path
@@ -56,7 +57,15 @@ from core.config import (
 )
 from core.data import load_customers, load_transactions
 from core.features import compute_rfm_segments, compute_seg_stats
-from core.scoring import get_payback_df, rank_customers, score_customer
+
+# Streamlit reruns this script but Python caches submodules; reload so
+# core/scoring.py edits (e.g. rank_customers signature) always apply.
+import core.scoring as _scoring_mod
+
+importlib.reload(_scoring_mod)
+get_payback_df = _scoring_mod.get_payback_df
+rank_customers = _scoring_mod.rank_customers
+score_customer = _scoring_mod.score_customer
 
 
 def _load(path: Path):
@@ -711,28 +720,37 @@ _RETENTION_RFM_FOCUS_SEGMENTS: tuple[str, ...] = (
 
 
 @st.dialog("Retention ranking results")
-def _retention_ranking_results_dialog(ranked: pd.DataFrame, strategy: str) -> None:
+def _retention_ranking_results_dialog(
+    ranked: pd.DataFrame,
+    strategy: str,
+    *,
+    cox_horizon_days: int | None = None,
+) -> None:
     import matplotlib.pyplot as plt
 
     st.success(f"Top {len(ranked)} customers ranked by **{strategy}**")
+    if cox_horizon_days is not None:
+        st.caption(
+            f"CoxPH conditional window: **{cox_horizon_days}** days from max(transaction date). "
+            "Priority = Cox dropout risk × min–max normalized BG/NBD CLV."
+        )
+
+    display_cols = ["customer_id"]
+    if "cox_dropout_risk" in ranked.columns:
+        display_cols.append("cox_dropout_risk")
+    display_cols.extend(["clv_bgnbd", "clv_survival", "priority_score"])
+    display_cols = [c for c in display_cols if c in ranked.columns]
+
+    fmt: dict = {
+        "clv_bgnbd": "${:.0f}",
+        "clv_survival": "${:.0f}",
+        "priority_score": "{:.4f}",
+    }
+    if "cox_dropout_risk" in ranked.columns:
+        fmt["cox_dropout_risk"] = "{:.1%}"
+
     st.dataframe(
-        ranked[
-            [
-                "customer_id",
-                "churn_probability",
-                "p_alive",
-                "clv_bgnbd",
-                "clv_survival",
-                "priority_score",
-            ]
-        ]
-        .style.format({
-            "churn_probability": "{:.1%}",
-            "p_alive": "{:.1%}",
-            "clv_bgnbd": "${:.0f}",
-            "clv_survival": "${:.0f}",
-            "priority_score": "{:.4f}",
-        }),
+        ranked[display_cols].style.format(fmt),
         use_container_width=True,
     )
 
@@ -753,14 +771,13 @@ def page_retention(models: dict, transactions: pd.DataFrame):
     strategy = st.selectbox(
         "Strategy",
         options=[
-            "RFM analysis",
-            "low_palive",
-            "high_clv_high_churn",
+            "RFM Strategy",
+            "High CLV High Churn Strategy",
         ],
         index=0,
     )
 
-    if strategy == "RFM analysis":
+    if strategy == "RFM Strategy":
         scores_df = models.get("scores_df")
         with st.spinner("Computing RFM segments..."):
             rfm_q = _rfm_customer_table(transactions)
@@ -824,17 +841,33 @@ def page_retention(models: dict, transactions: pd.DataFrame):
             else:
                 st.dataframe(fmt_sub, use_container_width=True)
     else:
-        top_k = st.number_input(
-            "Customers in the shortlist",
-            min_value=10,
-            max_value=500,
-            value=100,
-            step=10,
-            key=f"retention_top_k_{strategy}",
-            help="How many rows to return after sorting by the strategy score.",
-        )
+        c1, c2 = st.columns(2)
+        with c1:
+            top_k = st.number_input(
+                "Customers in the shortlist",
+                min_value=10,
+                max_value=500,
+                value=100,
+                step=10,
+                key=f"retention_top_k_{strategy}",
+                help="How many rows to return after sorting by the strategy score.",
+            )
+        with c2:
+            horizon_days = st.number_input(
+                "Cox horizon (days)",
+                min_value=1,
+                max_value=365,
+                value=30,
+                step=1,
+                key="retention_cox_horizon",
+                help=(
+                    "Forward window H for Cox: priority uses 1 − P(survive next H days | active)"
+                    " × normalized CLV. Tenure is as of max(transaction date)."
+                ),
+            )
 
-    if strategy != "RFM analysis":
+    if strategy != "RFM Strategy":
+        rank_key = "high_clv_high_churn"
         if st.button("Show results", type="primary"):
             scores_df = models.get("scores_df")
             if scores_df is None:
@@ -842,9 +875,20 @@ def page_retention(models: dict, transactions: pd.DataFrame):
                 return
 
             with st.spinner("Ranking..."):
-                ranked = rank_customers(scores_df, strategy, int(top_k))
+                ranked = rank_customers(
+                    scores_df,
+                    rank_key,
+                    int(top_k),
+                    cph=models["cph"],
+                    horizon_days=int(horizon_days),
+                    transactions=transactions,
+                )
 
-            _retention_ranking_results_dialog(ranked, strategy)
+            _retention_ranking_results_dialog(
+                ranked,
+                strategy,
+                cox_horizon_days=int(horizon_days),
+            )
 
 
 # ---------------------------------------------------------------------------

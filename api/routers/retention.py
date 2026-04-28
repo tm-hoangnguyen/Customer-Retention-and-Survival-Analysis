@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request
+import pandas as pd
 
 from api.schemas import (
     RankCustomersRequest,
@@ -12,7 +13,10 @@ from core.scoring import rank_customers
 router = APIRouter()
 
 
-def _retention_assumptions(request: Request) -> RetentionRankingAssumptions:
+def _retention_assumptions(
+    request: Request,
+    cox_horizon_days: int | None = None,
+) -> RetentionRankingAssumptions:
     state = request.app.state
     obs_end = str(state.transactions["transaction_date"].max().date())
     return RetentionRankingAssumptions(
@@ -21,6 +25,7 @@ def _retention_assumptions(request: Request) -> RetentionRankingAssumptions:
         cph_training_cutoff_date=str(CUTOFF_DATE.date()),
         cph_scoring_reference=obs_end,
         batch_artifact_source="artifacts/scores_df.pkl",
+        cox_horizon_days=cox_horizon_days,
     )
 
 
@@ -35,24 +40,43 @@ async def rank_customers_endpoint(body: RankCustomersRequest, request: Request):
         )
 
     try:
-        ranked = rank_customers(state.scores_df, body.strategy, body.top_k)
+        ranked = rank_customers(
+            state.scores_df,
+            body.strategy,
+            body.top_k,
+            cph=state.cph,
+            horizon_days=body.horizon_days,
+            transactions=state.transactions,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    churn_ref = state.scores_df[["customer_id", "churn_probability"]].drop_duplicates(
+        subset=["customer_id"],
+    )
+    ranked = ranked.merge(churn_ref, on="customer_id", how="left")
+
+    has_cdr = "cox_dropout_risk" in ranked.columns
     customers = [
         RankedCustomer(
             customer_id=row["customer_id"],
-            churn_probability=row["churn_probability"],
-            clv=row["clv_bgnbd"],
-            priority_score=row["priority_score"],
+            churn_probability=float(row["churn_probability"]),
+            clv=float(row["clv_bgnbd"]),
+            priority_score=float(row["priority_score"]),
+            cox_dropout_risk=(
+                float(row["cox_dropout_risk"])
+                if has_cdr and pd.notna(row["cox_dropout_risk"])
+                else None
+            ),
         )
         for _, row in ranked.iterrows()
     ]
+    hz = body.horizon_days
     return RankCustomersResponse(
         strategy=body.strategy,
         top_k=body.top_k,
         customers=customers,
-        assumptions=_retention_assumptions(request),
+        assumptions=_retention_assumptions(request, cox_horizon_days=hz),
     )

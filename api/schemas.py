@@ -153,15 +153,28 @@ class RetentionRankingAssumptions(BaseModel):
         ...,
         description="Pre-computed artifact file from train.py.",
     )
+    cox_horizon_days: int | None = Field(
+        None,
+        description="Applied for high_clv_high_churn: conditional survival window in days.",
+    )
 
 
 class RankCustomersRequest(BaseModel):
     top_k: int = Field(100, ge=1, le=5000, example=100)
-    strategy: Literal[
-        "high_churn_probability",
-        "low_palive",
+    strategy: Literal["high_clv_high_churn"] = Field(
         "high_clv_high_churn",
-    ] = Field("high_clv_high_churn", example="high_clv_high_churn")
+        example="high_clv_high_churn",
+        description="Cox dropout risk × min–max BG/NBD CLV (only retention ranking strategy).",
+    )
+    horizon_days: int = Field(
+        30,
+        ge=1,
+        le=365,
+        example=30,
+        description=(
+            "Cox horizon H (days): priority uses (1 - P(survive next H days | Cox)) × min-max CLV."
+        ),
+    )
 
 
 class RankedCustomer(BaseModel):
@@ -169,6 +182,10 @@ class RankedCustomer(BaseModel):
     churn_probability: float
     clv: float
     priority_score: float
+    cox_dropout_risk: float | None = Field(
+        None,
+        description="1 − P(survive next H days | active), from CoxPH (same H as request).",
+    )
 
 
 class RankCustomersResponse(BaseModel):

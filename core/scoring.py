@@ -402,7 +402,22 @@ def score_all_customers(
     profile_df["expected_remaining_lifetime"] = expected_lifetime_list
     profile_df["clv_survival"] = clv_survival_list
 
-    cox_df = profile_df[["customer_id", "expected_remaining_lifetime", "clv_survival"]]
+    cox_df = profile_df[
+        [
+            "customer_id",
+            "num_transactions",
+            "avg_amount",
+            "tenure",
+            "expected_remaining_lifetime",
+            "clv_survival",
+        ]
+    ].rename(
+        columns={
+            "num_transactions": "cox_num_transactions",
+            "avg_amount": "cox_avg_amount",
+            "tenure": "cox_tenure_days",
+        },
+    )
 
     # --- Merge all signals ---
     result = (
@@ -418,23 +433,126 @@ def score_all_customers(
     return result.reset_index(drop=True)
 
 
+def ensure_cox_profile_columns(
+    scores_df: pd.DataFrame,
+    transactions: pd.DataFrame | None = None,
+    cutoff_date: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """
+    Cox ranking needs cox_num_transactions, cox_avg_amount, cox_tenure_days.
+    Older scores_df pickles may omit them; rebuild from transactions (same logic
+    as batch scoring: history through max(transaction_date) or cutoff_date).
+    """
+    required = ("cox_num_transactions", "cox_avg_amount", "cox_tenure_days")
+    if all(c in scores_df.columns for c in required):
+        return scores_df
+    if transactions is None:
+        raise ValueError(
+            "scores_df is missing Cox profile columns "
+            f"{required}. Pass transactions, or run `python train.py` to refresh batch scores."
+        )
+    survival_cutoff = _resolve_cutoff(transactions, cutoff_date)
+    hist = transactions[transactions["transaction_date"] <= survival_cutoff]
+    profile = hist.groupby("customer_id").agg(
+        first_txn_date=("transaction_date", "min"),
+        cox_num_transactions=("transaction_date", "count"),
+        cox_avg_amount=("amount", "mean"),
+    ).reset_index()
+    profile["cox_tenure_days"] = (survival_cutoff - profile["first_txn_date"]).dt.days
+    profile = profile.drop(columns=["first_txn_date"])
+
+    out = scores_df.copy()
+    for c in required:
+        if c in out.columns:
+            out = out.drop(columns=[c])
+    return out.merge(profile, on="customer_id", how="left")
+
+
+def cox_conditional_dropout_risk(
+    scores_df: pd.DataFrame,
+    cph: Any,
+    horizon_days: int,
+) -> pd.Series:
+    """
+    For each customer, 1 - P(T > tenure + H | T > tenure) from the fitted CoxPH
+    marginal S(t), i.e. 1 - S(tenure+H)/S(tenure). Covariates and tenure match
+    batch scoring (max transaction date).
+    """
+    required = ("cox_num_transactions", "cox_avg_amount", "cox_tenure_days")
+    if not all(c in scores_df.columns for c in required):
+        raise ValueError(
+            "scores_df is missing Cox profile columns "
+            f"{required}. Use ensure_cox_profile_columns(..., transactions=...) or run `python train.py`."
+        )
+    cox_x = scores_df[list(required)].rename(
+        columns={
+            "cox_num_transactions": "num_transactions",
+            "cox_avg_amount": "avg_amount",
+            "cox_tenure_days": "tenure",
+        },
+    )
+    surv_all = cph.predict_survival_function(cox_x)
+    surv_index = surv_all.index.values.astype(float)
+    s_mat = surv_all.values
+    n_times, n_cust = s_mat.shape
+    if n_cust != len(scores_df):
+        raise RuntimeError("CoxPH survival matrix shape mismatch vs scores_df.")
+    tenure_arr = scores_df["cox_tenure_days"].to_numpy(dtype=float)
+    t2 = tenure_arr + float(horizon_days)
+    idx_tenure = np.searchsorted(surv_index, tenure_arr, side="right") - 1
+    idx_tenure = np.clip(idx_tenure, 0, n_times - 1)
+    idx_t2 = np.searchsorted(surv_index, t2, side="right") - 1
+    idx_t2 = np.clip(idx_t2, 0, n_times - 1)
+    cols = np.arange(n_cust)
+    s_tenure = s_mat[idx_tenure, cols]
+    s_t2 = s_mat[idx_t2, cols]
+    cond_surv = s_t2 / np.maximum(s_tenure, 1e-9)
+    cond_surv = np.clip(cond_surv, 0.0, 1.0)
+    risk = 1.0 - cond_surv
+    return pd.Series(risk, index=scores_df.index)
+
+
 def rank_customers(
     scores_df: pd.DataFrame,
     strategy: str,
     top_k: int,
+    *,
+    cph: Any | None = None,
+    horizon_days: int | None = None,
+    transactions: pd.DataFrame | None = None,
+    scoring_cutoff: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     df = scores_df.copy()
 
-    if strategy == "high_churn_probability":
-        df["priority_score"] = df["churn_probability"]
-    elif strategy == "low_palive":
-        df["priority_score"] = 1 - df["p_alive"]
-    elif strategy == "high_clv_high_churn":
+    if strategy == "high_clv_high_churn":
+        if cph is None or horizon_days is None:
+            raise ValueError(
+                "strategy 'high_clv_high_churn' requires cph and horizon_days "
+                "(Cox conditional horizon in days from batch scoring date)."
+            )
+        h = int(horizon_days)
+        if h < 1:
+            raise ValueError("horizon_days must be >= 1")
+        df = ensure_cox_profile_columns(df, transactions, scoring_cutoff)
+        valid = (
+            df["cox_tenure_days"].notna()
+            & df["cox_num_transactions"].notna()
+            & df["cox_avg_amount"].notna()
+        )
+        df = df.loc[valid].copy()
+        if df.empty:
+            raise ValueError("No rows with valid Cox profile columns to rank.")
+
+        df["cox_dropout_risk"] = cox_conditional_dropout_risk(df, cph, h).values
         clv_min, clv_max = df["clv_bgnbd"].min(), df["clv_bgnbd"].max()
         clv_norm = (df["clv_bgnbd"] - clv_min) / (clv_max - clv_min + 1e-9)
-        df["priority_score"] = df["churn_probability"] * clv_norm
+        df["priority_score"] = df["cox_dropout_risk"] * clv_norm
     else:
         raise ValueError(f"Unknown strategy: '{strategy}'")
 
     df["priority_score"] = df["priority_score"].round(4)
-    return df.sort_values("priority_score", ascending=False).head(top_k).reset_index(drop=True)
+    if "cox_dropout_risk" in df.columns:
+        df["cox_dropout_risk"] = df["cox_dropout_risk"].round(4)
+    out = df.sort_values("priority_score", ascending=False).head(top_k).reset_index(drop=True)
+    drop = [c for c in ("churn_probability", "p_alive") if c in out.columns]
+    return out.drop(columns=drop)
