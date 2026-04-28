@@ -213,26 +213,31 @@ def _rfm_segment_rules(row: pd.Series) -> str:
     return "Others"
 
 
+def _rfm_customer_table(transactions: pd.DataFrame) -> pd.DataFrame:
+    """Per-customer RFM table and segment labels (same logic as RFM Analysis page)."""
+    analysis_date = transactions["transaction_date"].max() + pd.Timedelta(days=1)
+    rfm = transactions.groupby("customer_id").agg(
+        recency=("transaction_date", lambda x: (analysis_date - x.max()).days),
+        frequency=("transaction_date", "count"),
+        monetary=("amount", "sum"),
+    ).reset_index()
+
+    rfm_q = rfm.copy()
+    rfm_q["R_score"] = pd.qcut(rfm_q["recency"], q=5, labels=[5, 4, 3, 2, 1]).astype(int)
+    rfm_q["F_score"] = pd.qcut(rfm_q["frequency"].rank(method="first"), q=5, labels=[1, 2, 3, 4, 5]).astype(int)
+    rfm_q["M_score"] = pd.qcut(rfm_q["monetary"].rank(method="first"), q=5, labels=[1, 2, 3, 4, 5]).astype(int)
+    rfm_q["segment"] = rfm_q.apply(_rfm_segment_rules, axis=1)
+    return rfm_q
+
+
 def page_rfm(transactions: pd.DataFrame, customers: pd.DataFrame):
     import matplotlib.patches as mpatches
     import matplotlib.pyplot as plt
 
     st.header("RFM Customer Segmentation")
-    analysis_date = transactions["transaction_date"].max() + pd.Timedelta(days=1)
 
     with st.spinner("Computing RFM segments..."):
-        rfm = transactions.groupby("customer_id").agg(
-            recency=("transaction_date", lambda x: (analysis_date - x.max()).days),
-            frequency=("transaction_date", "count"),
-            monetary=("amount", "sum"),
-        ).reset_index()
-
-        rfm_q = rfm.copy()
-        rfm_q["R_score"] = pd.qcut(rfm_q["recency"], q=5, labels=[5, 4, 3, 2, 1]).astype(int)
-        rfm_q["F_score"] = pd.qcut(rfm_q["frequency"].rank(method="first"), q=5, labels=[1, 2, 3, 4, 5]).astype(int)
-        rfm_q["M_score"] = pd.qcut(rfm_q["monetary"].rank(method="first"), q=5, labels=[1, 2, 3, 4, 5]).astype(int)
-        rfm_q["segment"] = rfm_q.apply(_rfm_segment_rules, axis=1)
-
+        rfm_q = _rfm_customer_table(transactions)
         total_customers = len(rfm_q)
         seg_stats = (
             rfm_q.groupby("segment")
@@ -698,49 +703,117 @@ def page_model_performance(models: dict):
 # Page 4 — Retention Ranking
 # ---------------------------------------------------------------------------
 
+_RETENTION_RFM_FOCUS_SEGMENTS: tuple[str, ...] = (
+    "Champions",
+    "Cannot Lose Them",
+    "Need Attention",
+)
+
+
+@st.dialog("Retention ranking results")
+def _retention_ranking_results_dialog(ranked: pd.DataFrame, strategy: str) -> None:
+    import matplotlib.pyplot as plt
+
+    st.success(f"Top {len(ranked)} customers ranked by **{strategy}**")
+    st.dataframe(
+        ranked[
+            [
+                "customer_id",
+                "churn_probability",
+                "p_alive",
+                "clv_bgnbd",
+                "clv_survival",
+                "priority_score",
+            ]
+        ]
+        .style.format({
+            "churn_probability": "{:.1%}",
+            "p_alive": "{:.1%}",
+            "clv_bgnbd": "${:.0f}",
+            "clv_survival": "${:.0f}",
+            "priority_score": "{:.4f}",
+        }),
+        use_container_width=True,
+    )
+
+    st.markdown("### Priority score distribution")
+    fig, ax = plt.subplots(figsize=(8, 3))
+    ax.hist(ranked["priority_score"], bins=30, color="#3498db", edgecolor="white")
+    ax.set_xlabel("Priority score")
+    ax.set_ylabel("Count")
+    ax.set_title(f"Priority score — {strategy}")
+    fig.tight_layout()
+    st.pyplot(fig)
+
+
 def page_retention(models: dict, transactions: pd.DataFrame):
     st.header("Retention Ranking")
     st.write("Identify which customers to prioritise with a retention budget.")
 
-    col1, col2 = st.columns(2)
-    strategy = col1.selectbox(
+    strategy = st.selectbox(
         "Strategy",
-        options=["high_churn_probability", "low_palive", "high_clv_high_churn"],
-        index=2,
+        options=[
+            "RFM analysis",
+            "high_churn_probability",
+            "low_palive",
+            "high_clv_high_churn",
+        ],
+        index=0,
     )
-    top_k = col2.slider("Top K customers", min_value=10, max_value=500, value=100, step=10)
 
-    if st.button("Rank Customers", type="primary"):
-        scores_df = models.get("scores_df")
-        if scores_df is None:
-            st.error("Batch scores not found. Please run `python train.py` to generate them.")
-            return
+    if strategy == "RFM analysis":
+        with st.spinner("Computing RFM segments..."):
+            rfm_q = _rfm_customer_table(transactions)
+        seg_colors = {
+            "Champions": "#5B9BD5",
+            "Cannot Lose Them": "#E06666",
+            "Need Attention": "#CEAD00",
+        }
+        cols = st.columns(3)
+        for i, seg in enumerate(_RETENTION_RFM_FOCUS_SEGMENTS):
+            part = rfm_q[rfm_q["segment"] == seg]
+            n_cust = len(part)
+            avg_mon = float(part["monetary"].mean()) if n_cust else 0.0
+            with cols[i]:
+                with st.container(border=True):
+                    st.markdown(
+                        f"<p style='color:{seg_colors[seg]};font-weight:700;"
+                        f"margin:0 0 0.5rem 0;font-size:1.05rem'>{seg}</p>",
+                        unsafe_allow_html=True,
+                    )
+                    st.metric("Customers", f"{n_cust:,}")
+                    st.metric("Avg. Monetary", f"${avg_mon:,.0f}")
+                    if st.button("View customers", key=f"retention_rfm_open_{i}", use_container_width=True):
+                        st.session_state["retention_rfm_segment"] = seg
 
-        with st.spinner("Ranking..."):
-            ranked = rank_customers(scores_df, strategy, top_k)
-
-        st.success(f"Top {len(ranked)} customers ranked by **{strategy}**")
-        st.dataframe(
-            ranked[["customer_id", "churn_probability", "p_alive", "clv_bgnbd", "clv_survival", "priority_score"]]
-            .style.format({
-                "churn_probability": "{:.1%}",
-                "p_alive": "{:.1%}",
-                "clv_bgnbd": "${:.0f}",
-                "clv_survival": "${:.0f}",
-                "priority_score": "{:.4f}",
-            }),
-            use_container_width=True,
+        sel = st.session_state.get("retention_rfm_segment")
+        if sel in _RETENTION_RFM_FOCUS_SEGMENTS:
+            st.dataframe(
+                rfm_q[rfm_q["segment"] == sel].reset_index(drop=True),
+                use_container_width=True,
+            )
+    else:
+        top_k = st.number_input(
+            "Customers in the shortlist",
+            min_value=10,
+            max_value=500,
+            value=100,
+            step=10,
+            key=f"retention_top_k_{strategy}",
+            help="How many rows to return after sorting by the strategy score.",
         )
 
-        st.markdown("### Priority Score Distribution")
-        import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(figsize=(8, 3))
-        ax.hist(ranked["priority_score"], bins=30, color="#3498db", edgecolor="white")
-        ax.set_xlabel("Priority Score")
-        ax.set_ylabel("Count")
-        ax.set_title(f"Priority Score — {strategy}")
-        fig.tight_layout()
-        st.pyplot(fig)
+    if strategy != "RFM analysis":
+        if st.button("Show results", type="primary"):
+            scores_df = models.get("scores_df")
+            if scores_df is None:
+                st.error("Batch scores not found. Please run `python train.py` to generate them.")
+                return
+
+            with st.spinner("Ranking..."):
+                ranked = rank_customers(scores_df, strategy, int(top_k))
+
+            _retention_ranking_results_dialog(ranked, strategy)
 
 
 # ---------------------------------------------------------------------------
