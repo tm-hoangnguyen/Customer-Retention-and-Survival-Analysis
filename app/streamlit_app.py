@@ -754,7 +754,6 @@ def page_retention(models: dict, transactions: pd.DataFrame):
         "Strategy",
         options=[
             "RFM analysis",
-            "high_churn_probability",
             "low_palive",
             "high_clv_high_churn",
         ],
@@ -762,8 +761,18 @@ def page_retention(models: dict, transactions: pd.DataFrame):
     )
 
     if strategy == "RFM analysis":
+        scores_df = models.get("scores_df")
         with st.spinner("Computing RFM segments..."):
             rfm_q = _rfm_customer_table(transactions)
+        if scores_df is not None:
+            rfm_retention = rfm_q.merge(
+                scores_df[["customer_id", "churn_probability"]].drop_duplicates(subset=["customer_id"]),
+                on="customer_id",
+                how="left",
+            )
+        else:
+            rfm_retention = rfm_q.copy()
+            st.caption("Batch scores not found — run `python train.py` to add **churn probability** to segment lists.")
         seg_colors = {
             "Champions": "#5B9BD5",
             "Cannot Lose Them": "#E06666",
@@ -771,7 +780,7 @@ def page_retention(models: dict, transactions: pd.DataFrame):
         }
         cols = st.columns(3)
         for i, seg in enumerate(_RETENTION_RFM_FOCUS_SEGMENTS):
-            part = rfm_q[rfm_q["segment"] == seg]
+            part = rfm_retention[rfm_retention["segment"] == seg]
             n_cust = len(part)
             avg_mon = float(part["monetary"].mean()) if n_cust else 0.0
             with cols[i]:
@@ -788,10 +797,32 @@ def page_retention(models: dict, transactions: pd.DataFrame):
 
         sel = st.session_state.get("retention_rfm_segment")
         if sel in _RETENTION_RFM_FOCUS_SEGMENTS:
-            st.dataframe(
-                rfm_q[rfm_q["segment"] == sel].reset_index(drop=True),
-                use_container_width=True,
-            )
+            sub = rfm_retention[rfm_retention["segment"] == sel].copy()
+            if "churn_probability" in sub.columns and sub["churn_probability"].notna().any():
+                sub = sub.sort_values("churn_probability", ascending=False, na_position="last")
+            sub = sub.reset_index(drop=True)
+            display_cols = [
+                c for c in (
+                    "customer_id",
+                    "churn_probability",
+                    "recency",
+                    "frequency",
+                    "monetary",
+                    "R_score",
+                    "F_score",
+                    "M_score",
+                    "segment",
+                )
+                if c in sub.columns
+            ]
+            fmt_sub = sub[display_cols]
+            if "churn_probability" in fmt_sub.columns:
+                st.dataframe(
+                    fmt_sub.style.format({"churn_probability": "{:.1%}"}),
+                    use_container_width=True,
+                )
+            else:
+                st.dataframe(fmt_sub, use_container_width=True)
     else:
         top_k = st.number_input(
             "Customers in the shortlist",
