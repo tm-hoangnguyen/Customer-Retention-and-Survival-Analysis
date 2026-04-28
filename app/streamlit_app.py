@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import dill
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from core.charts import (
+    convert_logodds_to_probability,
     plot_confusion_matrix,
     plot_gamma_kde,
     plot_history_alive,
@@ -621,12 +623,74 @@ def page_model_performance(models: dict):
         st.pyplot(fig)
 
     with tab4:
-        idx = st.number_input("Row index in test set", min_value=0, max_value=len(X_test) - 1, value=1)
+        # ── Build one representative customer per RFM segment from the test set ──
+        analysis_date = pd.Timestamp("2026-01-01")  # day after max transaction date
+        rfm = (
+            churn_data.groupby("customer_id")
+            .agg(
+                recency=("recency", "first"),
+                frequency=("frequency", "first"),
+                monetary=("monetary", "first"),
+            )
+            .reset_index()
+        )
+        rfm["R_score"] = pd.qcut(rfm["recency"], q=5, labels=[5, 4, 3, 2, 1]).astype(int)
+        rfm["F_score"] = pd.qcut(rfm["frequency"].rank(method="first"), q=5, labels=[1, 2, 3, 4, 5]).astype(int)
+        rfm["M_score"] = pd.qcut(rfm["monetary"].rank(method="first"), q=5, labels=[1, 2, 3, 4, 5]).astype(int)
+        rfm["segment"] = rfm.apply(_rfm_segment_rules, axis=1)
+
+        # Keep only customers in the test set, preserving row position in X_test
+        test_customers = test[["customer_id"]].reset_index(drop=True)
+        test_customers["_row_idx"] = test_customers.index
+        rfm_test = rfm.merge(test_customers, on="customer_id", how="inner")
+
+        # One representative per segment (first match)
+        rep_rows = (
+            rfm_test.groupby("segment", sort=False)
+            .first()
+            .reset_index()[["segment", "customer_id", "recency", "frequency", "monetary",
+                             "R_score", "F_score", "M_score", "_row_idx"]]
+            .sort_values("segment")
+        )
+
+        st.markdown("#### Select a customer by RFM segment")
+        st.caption("Click a row to load that customer's SHAP force plot below.")
+        display_cols = ["customer_id", "recency", "frequency", "monetary",
+                        "R_score", "F_score", "M_score", "segment"]
+        selection = st.dataframe(
+            rep_rows[display_cols],
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+        )
+
+        selected_rows = selection.selection.rows
+        table_row = selected_rows[0] if selected_rows else 0
+        idx = int(rep_rows.iloc[table_row]["_row_idx"])
+
         import shap
         with st.spinner("Computing SHAP force plot..."):
             explainer = shap.TreeExplainer(models["lgbm"])
-            fig = plot_shap_force(explainer, X_test, int(idx))
+            shap_vals = explainer.shap_values(X_test)
+            if isinstance(shap_vals, list):
+                shap_vals = shap_vals[1]
+                base_val = float(explainer.expected_value[1])
+            else:
+                base_val = float(explainer.expected_value)
+            logodds = base_val + float(shap_vals[idx].sum())
+            prob = convert_logodds_to_probability(logodds)
+            fig = plot_shap_force(explainer, X_test, idx)
         st.pyplot(fig)
+        e_val = float(np.exp(-logodds))
+        denom = 1 + e_val
+        st.markdown(f"**log-odds = {logodds:.2f} → Churn Probability = {prob:.2%}**")
+        st.latex(
+            rf"p = \frac{{1}}{{1 + e^{{-(\text{{log-odds}})}}}} = "
+            rf"\frac{{1}}{{1 + e^{{{-logodds:.2f}}}}} = "
+            rf"\frac{{1}}{{1 + {e_val:.3f}}} = "
+            rf"\frac{{1}}{{{denom:.3f}}} \approx {prob:.3f}"
+        )
 
 
 

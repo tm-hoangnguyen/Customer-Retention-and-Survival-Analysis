@@ -165,14 +165,19 @@ def plot_shap_force(explainer: Any, X_test: pd.DataFrame, idx: int) -> plt.Figur
         expected_value = explainer.expected_value
     shap.force_plot(
         expected_value,
-        shap_values[idx],
-        X_test.iloc[idx],
+        shap_values[idx].round(2),
+        X_test.iloc[idx].round(2),
         matplotlib=True,
         show=False,
+        text_rotation=45,
     )
     fig = plt.gcf()
+    fig.set_size_inches(14, 4)
     fig.tight_layout()
     return fig
+
+def convert_logodds_to_probability(logodds: float) -> float:
+    return 1 / (1 + np.exp(-logodds))
 
 
 # ---------------------------------------------------------------------------
