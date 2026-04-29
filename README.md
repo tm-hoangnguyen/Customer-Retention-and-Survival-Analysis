@@ -30,6 +30,7 @@ survival_analysis/
 │   └── charts.py           # Matplotlib chart helpers
 ├── api/
 │   ├── main.py             # FastAPI app entry point
+│   ├── schemas.py          # Pydantic request/response models
 │   └── routers/            # Endpoints: score, churn, survival, clv, retention
 ├── app/
 │   └── streamlit_app.py    # Streamlit dashboard
