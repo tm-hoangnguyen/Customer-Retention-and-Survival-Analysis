@@ -88,11 +88,39 @@ Interactive docs at [http://localhost:8000/docs](http://localhost:8000/docs)
 |---|---|
 | **Transactions** | Browse all transactions with filters by customer ID, date range, and amount |
 | **RFM Analysis** | Recency × Frequency score grid (0–5 axes) with named segments, customer counts, % of base, and average monetary value — see figure below. |
-| **Customer Lookup** | Individual risk profile: churn probability, P(alive), survival curve, CLV/NPV |
-| **Model Performance** | Confusion matrix, SHAP feature importance, Gamma-Gamma KDE, survival curves |
-| **Retention Ranking** | Rank customers by churn risk or CLV for targeted retention campaigns |
+| **Customer Lookup** | Individual risk profile: churn probability, P(alive) over time (BG/NBD), CoxPH survival curve, CLV/NPV — see figures below. |
+| **Model Performance** | Confusion matrix, SHAP plots, **Gamma-Gamma** transaction-amount distribution (see figure), Cox sample survival curves |
+| **Retention Ranking** | Two shortlist strategies — **RFM segments** vs **model-based priority** (see below) |
 
-![RFM Customer Segmentation — Recency vs Frequency grid](docs/images/rfm_customer_segmentation.png)
+The **RFM Analysis** page shows customers on a Recency × Frequency grid, with segment labels, customer counts, base share, and average spend for each cell to highlight valuable and at-risk cohorts.
+
+<p align="center">
+  <img src="./docs/images/rfm_customer_segmentation.jpg" alt="RFM Customer Segmentation: Recency vs Frequency score grid with segment counts and average monetary value" width="920">
+</p>
+
+The **Customer Lookup** page plots a **CoxPH survival curve** for the selected customer: **past** behavior (from first purchase up to the training cutoff) and a **forward** projection on the same time scale.
+
+<p align="center">
+  <img src="./docs/images/survival_curve.png" alt="CoxPH survival curve: past segment to cutoff and forward projection" width="920">
+</p>
+
+The same page shows **P(alive)** from the **BG/NBD** model as a **history** chart (`lifetimes` `plot_history_alive`): probability the customer is still active after each purchase, with purchase dates on the timeline. Drops reflect time since the last order without a repeat; spikes occur when another purchase is observed.
+
+<p align="center">
+  <img src="./docs/images/p_alive_history.png" alt="BG/NBD P(alive) history over time with purchase markers" width="920">
+</p>
+
+**Model Performance → Gamma-Gamma** plots the **fitted spend model**: a **density curve** of amounts simulated from the Gamma-Gamma parameters, i.e. the implied distribution of order values (right-skewed mass at lower amounts, long tail of larger tickets).
+
+<p align="center">
+  <img src="./docs/images/gamma_gamma_dist.png" alt="Distribution of transaction amounts from fitted Gamma-Gamma model (smooth density curve)" width="920">
+</p>
+
+**Retention Ranking Page:**
+
+**RFM:** browse three segments (Champions, Cannot Lose Them, Need Attention); churn-highest first when batch scores exist. 
+
+**High CLV high churn:** one ranked list from Cox short-term dropout risk × scaled BG/NBD CLV.
 
 ---
 
