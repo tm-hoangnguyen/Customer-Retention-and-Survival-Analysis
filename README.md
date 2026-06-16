@@ -3,16 +3,31 @@
 End-to-end customer analytics platform combining churn classification (LightGBM),
 BG/NBD + Gamma-Gamma CLV modelling, and CoxPH survival analysis.
 
+
+---
+
+## Introduction
+
+If you have a limited marketing and retention budget, which customers would you prioritize?
+
+The naive answer — target everyone at risk of churning — ignores the fact that not all at-risk customers are worth saving. A customer who churns after a single low-value order costs less to lose than a high-frequency, high-spend customer who shows early signs of disengagement.
+
+This project builds the analytical foundation to answer that question rigorously, combining three complementary views of every customer:
+
+1. **Churn risk** — Will this customer make another purchase in the next N days?
+2. **Economic value** — How much revenue can we expect from this customer over their remaining lifetime?
+3. **Time to disengage** — How long do we have before this customer is likely to drop off?
+
+The intersection — customers who are both high-value and high-risk — defines the shortlist where retention spend has the highest expected return.
+
 ---
 
 ## Data
 
-Raw inputs live under `data/` as CSV files loaded by `core/data.py`:
-
 - **`transactions.csv`**: one purchase per row with `customer_id`, `transaction_date`, and `amount` (transaction value). Dates are parsed as timestamps; loaders assert no missing dates or amounts.
-- **`customers.csv`**: one customer per row with `customer_id`, `signup_date`, and `true_lifetime_days` (ground-truth total lifetime in days).
+- **`customers.csv`**: one customer per row with `customer_id`, `signup_date`, and `true_lifetime_days` (ground-truth total lifetime in days, or total duration from signup until the customer churned).
 
-Together these tables support RFM and transaction-history features, probabilistic churn, repeat-purchase BG/NBD and Gamma-Gamma valuation, and CoxPH survival modelling.
+Together these tables support RFM and transaction-history features, probabilistic churn, BG/NBD and Gamma-Gamma valuation, and CoxPH survival modelling.
 
 ---
 
